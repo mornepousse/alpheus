@@ -92,6 +92,72 @@ fn actions_and_resources_defaults_and_settings() {
 }
 
 #[test]
+fn net_interface_defaults_empty_and_parses() {
+    assert_eq!(BarConfig::default().resources.net_interface, "");
+    let c = BarConfig::from_text("[resources]\nnet_interface = \"wlan0\"\n").unwrap();
+    assert_eq!(c.resources.net_interface, "wlan0");
+    let longest = "a".repeat(NET_INTERFACE_MAX);
+    let c = BarConfig::from_text(&format!("[resources]\nnet_interface = \"{longest}\"\n")).unwrap();
+    assert_eq!(c.resources.net_interface, longest, "15 bytes accepted");
+}
+
+#[test]
+fn net_interface_rejects_a_bad_name_without_naming_it() {
+    for bad in ["a".repeat(NET_INTERFACE_MAX + 1), "a/b".into(), "a:b".into(), "a b".into()] {
+        let e = BarConfig::from_text(&format!("[resources]\nnet_interface = \"{bad}\"\n")).unwrap_err();
+        assert!(e.contains("resources.net_interface"), "{e}");
+        assert!(!e.contains(&bad), "the value stays out of the message: {e}");
+    }
+}
+
+#[test]
+fn gpu_metric_parses_its_four_words() {
+    assert_eq!(BarConfig::default().resources.gpu_metric, GpuMetric::Auto);
+    for (word, want) in [("auto", GpuMetric::Auto), ("usage", GpuMetric::Usage), ("temp", GpuMetric::Temp), ("both", GpuMetric::Both)] {
+        let c = BarConfig::from_text(&format!("[resources]\ngpu_metric = \"{word}\"\n")).unwrap();
+        assert_eq!(c.resources.gpu_metric, want, "{word}");
+    }
+    assert!(BarConfig::from_text("[resources]\ngpu_metric = \"load\"\n").is_err());
+}
+
+#[test]
+fn disk_keys_default_and_parse() {
+    let d = BarConfig::default().resources;
+    assert_eq!((d.disk_mounts.len(), d.disk_interval), (0, 15));
+    let c = BarConfig::from_text("[resources]\ndisk_mounts = [\"/\", \"/fictional/data\"]\ndisk_interval = 60\n").unwrap();
+    assert_eq!(c.resources.disk_mounts, [PathBuf::from("/"), PathBuf::from("/fictional/data")]);
+    assert_eq!(c.resources.disk_interval, 60);
+    let c = BarConfig::from_text("[resources]\ndisk_interval = 1\n").unwrap();
+    assert_eq!(c.resources.disk_interval, 1, "the lower bound is accepted");
+    let c = BarConfig::from_text("[resources]\ndisk_interval = 300\n").unwrap();
+    assert_eq!(c.resources.disk_interval, 300, "the upper bound is accepted");
+    let four = "disk_mounts = [\"/fictional/a\", \"/fictional/b\", \"/fictional/c\", \"/fictional/d\"]";
+    assert_eq!(BarConfig::from_text(&format!("[resources]\n{four}\n")).unwrap().resources.disk_mounts.len(), DISKS);
+}
+
+#[test]
+fn disk_mounts_rejects_bad_entries_without_naming_them() {
+    let five = "[\"/fictional/a\", \"/fictional/b\", \"/fictional/c\", \"/fictional/d\", \"/fictional/e\"]";
+    let e = BarConfig::from_text(&format!("[resources]\ndisk_mounts = {five}\n")).unwrap_err();
+    assert!(e.contains("resources.disk_mounts"), "{e}");
+    assert!(!e.contains("/fictional"), "no path in the message: {e}");
+    let e = BarConfig::from_text("[resources]\ndisk_mounts = [\"/fictional/a\", \"fictional\"]\n").unwrap_err();
+    assert!(e.contains("resources.disk_mounts") && e.contains("entry 2"), "{e}");
+    assert!(!e.contains("fictional"), "no path in the message: {e}");
+    let e = BarConfig::from_text("[resources]\ndisk_mounts = [\"/fictional/a\", \"/fictional/b\", \"/fictional/a\"]\n").unwrap_err();
+    assert!(e.contains("resources.disk_mounts") && e.contains("entry 3"), "{e}");
+    assert!(!e.contains("fictional"), "no path in the message: {e}");
+    // A `..` would let a path escape the mount point it is matched against without being resolved.
+    let e = BarConfig::from_text("[resources]\ndisk_mounts = [\"/fictional/data/../nfs\"]\n").unwrap_err();
+    assert!(e.contains("resources.disk_mounts") && e.contains("entry 1") && e.contains(".."), "{e}");
+    assert!(!e.contains("fictional"), "no path in the message: {e}");
+    for bad in [0, 301] {
+        let e = BarConfig::from_text(&format!("[resources]\ndisk_interval = {bad}\n")).unwrap_err();
+        assert!(e.contains("resources.disk_interval"), "{e}");
+    }
+}
+
+#[test]
 fn resources_show_defaults_and_validation() {
     use crate::config::ResourceItem::*;
     let d = BarConfig::default();

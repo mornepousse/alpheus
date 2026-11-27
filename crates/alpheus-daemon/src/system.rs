@@ -9,7 +9,7 @@
 //!
 //! Never:
 //! - read anything: no file, no socket, no clock — the sources do that and hand the result in;
-//! - grow with time: the history is a fixed ring of about 3 KB (`the_history_stays_small`), and
+//! - grow with time: the history is a fixed ring of about 3.3 KB (`the_history_stays_small`), and
 //!   nothing else here keeps a list that a session can lengthen;
 //! - read a source that is down as a state (docs/decisions.md, "A source that is down is not a
 //!   state").
@@ -415,6 +415,17 @@ pub struct NetRate {
     pub up: u64,
 }
 
+/// Paths the disk item can follow (`[resources] disk_mounts` holds at most this many).
+pub const DISKS: usize = 4;
+
+/// GPU usage, percent: the busy share the driver reports (amdgpu), or one minus the idle share
+/// (`idle_based`, Intel's estimate, labelled `active` in the popup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuBusy {
+    pub percent: u8,
+    pub idle_based: bool,
+}
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
@@ -427,10 +438,15 @@ pub struct Sample {
     pub temperature: Option<i16>,
     /// Throughput of the default route's interface; None until two readings or without a route.
     pub net: Option<NetRate>,
-    /// Percent of `$HOME`'s filesystem in use, like `df`.
-    pub disk: Option<u8>,
+    /// Percent in use, like `df`, of each `[resources] disk_mounts` path in order (`$HOME`'s
+    /// filesystem first when the list is empty); the slots past the list stay None.
+    pub disks: [Option<u8>; DISKS],
     /// GPU temperature, °C.
     pub gpu: Option<i16>,
+    /// GPU usage; None while the card is runtime-suspended, or without a card that offers it.
+    pub gpu_busy: Option<GpuBusy>,
+    /// VRAM in use, percent rounded up (amdgpu).
+    pub vram: Option<u8>,
     /// Installed memory, in tenths of GiB (read with `memory`, never alone).
     pub memory_total: Option<u16>,
 }
@@ -533,6 +549,6 @@ mod tests {
 
     #[test]
     fn the_history_stays_small() {
-        assert!(size_of::<History>() <= 3 * 1024, "{}", size_of::<History>());
+        assert!(size_of::<History>() <= 4 * 1024, "{}", size_of::<History>());
     }
 }

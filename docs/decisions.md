@@ -390,12 +390,17 @@ Date: 2026-11-21 · Source: tests `the_verb_is_refused_only_without_any_session_
 
 ### The resources history is kept always, as whole samples
 
-While the `resources` module is on, the bar keeps a ring of the last 60 samples (about 3 KB, written
+While the `resources` module is on, the bar keeps a ring of the last 60 samples (about 3.3 KB, written
 in place on the existing tick, with no allocation after start), whether or not the popup is open.
 The popup therefore opens on a graph that is already full. A ring filled only while the popup is
-open would save those 3 KB but open on an empty graph that takes a minute or two to say anything.
+open would save those 3.3 KB but open on an empty graph that takes a minute or two to say anything.
 Every pass is stored, including one with no reading, so a missing reading is a gap in the graph and
 the time axis never shifts.
+
+The bound pinned by `the_history_stays_small` was 3 KiB; the owner approved 4 KiB on 2026-11-27 so the
+sample can carry the GPU, its video memory and four disks (+8 bytes per sample, 48 to 56: a 56-byte
+sample makes the ring 3,376 bytes, above 3,072). The anonymous-memory bound of the memory test is
+unchanged.
 
 Date: 2026-11-15 · Source: tests `the_ring_keeps_the_last_sixty_and_push_reports_last_only` and `the_history_stays_small` (`system.rs`); memory `resources_popup_pss_idle_open_and_closed`
 
@@ -2038,3 +2043,101 @@ screen, which the panel never sets below 1 % (a black screen leaves no way back)
 unlit keyboard is a normal state, and the screen still shows the row to light it again.
 
 Date: 2026-11-27 · Source: tests `kbd_backlight_steps_by_level_or_by_percent` (`kbd_backlight.rs`), `kbd_backlight_sets_with_brightnessctl_leds_class`, `kbd_backlight_enter_and_space_cycle` (`quick/tests.rs`), `quick_kbd_backlight_right_sends_brightnessctl_leds` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-quick-radios-design.md` (owner decision 3)
+
+### The bar shows the fullest disk, the popup one block per path
+
+With `[resources] disk_mounts` listing up to four paths, the bar's `disk` figure is the fullest of
+them: one figure keeps the bar short, and the fullest is the one that needs watching. The popup has
+one block per path, in the order written, named by the path cut from the left (its end tells two
+mounts apart); with no list, the single block keeps its name `Disk` and measures `$HOME`. The
+paths stay out of logs and config errors, which name an entry by its position: a mount's name can
+be private.
+
+Date: 2026-11-27 · Source: tests `the_bar_shows_the_fullest_disk`, `one_block_per_mount_and_monitor_row_follows`, `a_mount_block_is_named_by_its_path_left_truncated`, `no_mounts_keeps_the_disk_block_name`, `disk_mounts_rejects_bad_entries_without_naming_them`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+
+### Disks are read every `disk_interval` seconds, the last figures repeat between reads
+
+A disk's fill changes slowly, so the disks are read on the first pass and then once
+`[resources] disk_interval` seconds (15 by default) have passed, inside the existing resources
+tick: no second timer, no thread. In between, every sample carries the last figures, so the graph
+has no gaps. `statvfs` stays on the event loop (a timeout would need a thread), so a `disk_mounts`
+path on a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `smbfs`, `sshfs`, `9p`, `ceph`,
+`glusterfs`, `davfs`, `afs`, `lustre`, an untyped `fuse`, and every `fuse.*` type except the
+local `fuse.gocryptfs`, `fuse.cryfs` and `fuse.encfs`: an unknown FUSE type may be served over
+the network) is never `statvfs`-ed at all and shows `—`: a server that stops answering can never
+block the bar (owner's decision, 2026-11-27). An automount point (`autofs` in mountinfo until it
+is first accessed) is skipped as well, since a `statvfs` would mount the share there and then, on
+the loop; a local automount, such as systemd's `/boot`, then shows `—` too. The filesystem type
+is read once at start from `/proc/self/mountinfo`, the mount with the longest mount point
+containing the path winning (the later line on a tie, a mount over another); the path is matched
+by its text, never resolved, since resolving it could hang on that very mount, so a symlink to a
+share is not followed, and a listed path holding a `..` is refused at load (it would be matched
+against the wrong mount point). `$HOME`, used when the list is empty, is read whatever it lies on,
+as before: a session whose home hangs has worse troubles than its bar. Paths are never logged.
+
+Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`, `a_network_mount_is_found_by_its_longest_mount_point`, `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`, `disk_mounts_rejects_bad_entries_without_naming_them`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+
+### GPU usage comes from sysfs only; NVIDIA proprietary shows —
+
+The `gpu` item shows usage from the card's own sysfs files, with no command and no library:
+amdgpu's `gpu_busy_percent` and its VRAM figures, or Intel's idle residency (see "Intel GPU usage
+is an idle-residency estimate, labelled active"). The card is picked among
+`/sys/class/drm/card<N>` by the file name of its `device/driver` link (only links are read for the
+pick); `amdgpu` first, then `i915` and `xe`, and any other driver never wins, so a DisplayLink
+`evdi` card or NVIDIA's proprietary one is never read. `device/power/runtime_status` is read before
+any usage file, and a sleeping card gives no figure (see "A GPU's usage is read without keeping it
+awake"). NVIDIA's proprietary driver has no such file and no hwmon: its GPU shows `—` in the
+popup and nothing on the bar. `nvidia-smi` would be a resident child or a process every tick, and
+NVML a library loaded into the daemon; neither fits a bar that runs no command for its figures
+(owner's decision, 2026-11-27). `gpu_metric` decides at start what is read (`auto`: usage when a card
+offering it is found, else the temperature), so a metric not shown costs no read.
+
+Date: 2026-11-27 · Source: tests `gpu_usage_reads_amdgpu_busy_and_vram`, `a_monitor_only_card_never_wins`, `gpu_nvidia_proprietary_gives_nothing_and_no_panic`, `a_suspended_gpu_is_not_read`, `gpu_metric_temp_reads_no_usage_file`, `gpu_metric_auto_prefers_usage_and_skips_the_sensor`, `the_resources_reader_never_logs_a_mount_an_interface_or_a_card` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+
+### A GPU's usage is read without keeping it awake
+
+Reading a GPU's usage file is not free for its power state, even when the card is awake: i915's
+`rc6_residency_ms` and xe's `idle_residency_ms` take a runtime-PM reference for the read, and
+amdgpu's `gpu_busy_percent` releases its own with `pm_runtime_put_autosuspend`, which marks the
+device busy; the autosuspend timer (10 s on i915, `device/power/autosuspend_delay_ms`) restarts at
+each read. Read every pass (2 s by default), a card that would fall asleep never does. So:
+
+- `auto` picks only the card whose `device/boot_vga` reads 1, the one driving the panel; a hybrid
+  laptop's discrete GPU is read only when `gpu_sensor` names its driver.
+- `device/power/runtime_status` is read before any usage file: only `active`, `unsupported` or no
+  such file lets the usage files be opened (`suspended`, `suspending`, `resuming` give no figure).
+- The usage file is read at most once per the card's autosuspend delay and a second
+  (`device/power/autosuspend_delay_ms`, read when the card is picked and again each time it
+  wakes, so a delay changed while it slept is followed), the last figures
+  repeating in between: the figure refreshes about every 11 s on Intel and 6 s on amdgpu, and the
+  card can still fall asleep between two reads; once asleep it is no longer read. No readable delay,
+  or a negative one (runtime PM off: the card never sleeps), reads every pass.
+- In `both`, the temperature is read from the hwmon under that same card's device
+  (`device/hwmon/hwmon<N>`), never another card of its driver, and follows the same rule; in
+  `temp`, so does the hwmon of a secondary card named in `gpu_sensor`, including one absent at
+  start (an eGPU plugged in later), spaced once it is picked.
+
+Reading the connectors' power state to read faster while a display is lit was considered and left
+out: alpheus never touches the screens' power, not even to read it ("alpheus never handles sleep or
+the screens' power"). Never written: only `runtime_status`, `autosuspend_delay_ms` and `boot_vga`
+are read beside the usage and hwmon files. Controller ruling, 2026-11-27 (to be confirmed by the
+owner; reversible).
+
+Date: 2026-11-27 · Source: tests `auto_picks_only_the_boot_vga_card`, `only_an_active_card_is_read`, `usage_is_read_once_per_autosuspend_delay_and_a_second`, `no_autosuspend_delay_reads_every_pass`, `both_skips_the_sensor_of_a_sleeping_card`, `both_reads_the_hwmon_of_the_gated_card`, `a_wake_reads_the_autosuspend_delay_again`, `temp_spaces_the_hwmon_of_a_named_secondary_card`, `temp_spaces_a_named_secondary_card_that_appears_later`; kernel `drivers/gpu/drm/i915/gt/intel_gt_sysfs_pm.c` (`get_residency`), `drivers/gpu/drm/i915/intel_runtime_pm.c`, `drivers/gpu/drm/xe/xe_gt_idle.c`, `drivers/gpu/drm/amd/pm/amdgpu_pm.c`, `include/linux/pm_runtime.h`
+
+### Intel GPU usage is an idle-residency estimate, labelled active
+
+Intel's drivers expose no busy percent in sysfs, and engine load needs the i915/xe PMU
+(`perf_event_open`, `CAP_PERFMON` or root) or `intel_gpu_top` (a resident child): neither fits a
+bar that runs no command and asks for no privilege. What sysfs gives any user is idle residency: i915's
+RC6 residency (`gt/gt0/rc6_residency_ms`, else `power/rc6_residency_ms` on older kernels) and xe's
+GT idle residency (`device/tile0/gt0/gtidle/idle_residency_ms`). Two readings give the share of
+the time the GPU was idle; `gpu` shows 100 minus it, rounded and clamped, with a dim `active `
+before the percent in the popup, because a GPU kept out of its idle state is not necessarily
+loaded: the figure is time awake, not work done. The first pass after start, after a sleep or after
+the counter goes back (a wrap of the 32-bit millisecond counter, or a reset) has no figure, like the
+CPU's. The reads follow "A GPU's usage is read without keeping it awake" (once per autosuspend
+delay and a second, about 11 s on i915). The xe tree is taken from the kernel's driver
+(`xe_tile_sysfs.c`, `xe_gt_sysfs.c`, `xe_gt_idle.c`), not checked on xe hardware.
+
+Date: 2026-11-27 · Source: tests `gpu_usage_from_rc6_is_one_minus_the_idle_share`, `busy_from_idle_clamps_and_refuses_a_counter_going_back`, `the_older_rc6_path_is_read_when_gt0_is_absent`, `a_suspension_drops_the_idle_baseline`, `xe_idle_residency_is_read_from_the_tile_tree`, `the_intel_estimate_reads_active`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md` (draft Q2)

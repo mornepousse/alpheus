@@ -2220,6 +2220,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/emoji.rs",
     "launcher/emoji/",
     "resources/mod.rs",
+    "sources/resources.rs",
     "timer/mod.rs",
     "timer/popup.rs",
     "timer/shutdown.rs",
@@ -4666,6 +4667,25 @@ fn the_camera_logs_name_no_process() {
         }
     }
     assert!(logs >= 3, "the log lines were not found: the check is hollow");
+}
+
+/// A log line of the resources reader never names a disk path, a mount, an interface or a GPU
+/// card: no placeholder and no argument with one of those words. The code alone, so a commented
+/// example of a line that would leak is not read as one.
+#[test]
+fn the_resources_reader_never_logs_a_mount_an_interface_or_a_card() {
+    let files = source_files();
+    let reader = &files.iter().find(|(p, _)| relative_path(p) == "sources/resources.rs").expect("sources/resources.rs").1;
+    let mut logs = 0;
+    for line in production_code_without_comments(reader).lines().filter(|l| l.contains("log(")) {
+        logs += 1;
+        for word in ["path", "mount", "iface", "interface", "card", "dir"] {
+            let braced = [format!("{{{word}}}"), format!("{{{word}:")];
+            let tokens = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+            assert!(!braced.iter().any(|b| line.contains(b)) && !tokens, "a resources log line names `{word}`: {line}");
+        }
+    }
+    assert!(logs >= 1, "the log lines were not found: the check is hollow");
 }
 
 /// The panel's Bluetooth row draws as the bar's module, from the same glyphs

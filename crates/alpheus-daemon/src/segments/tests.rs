@@ -941,12 +941,22 @@ fn resources_extra_items_in_the_order_written() {
         memory: Some(61),
         temperature: Some(45),
         net: Some(NetRate { down: 1_258_291, up: 81_920 }),
-        disk: Some(62),
+        disks: [Some(62), None, None, None],
         gpu: Some(54),
         ..Sample::default()
     };
     let (t, _) = items(&resources_with(s), &[Gpu, Net, Disk, Cpu], ModuleColors::None).unwrap();
     assert_eq!(t, "\u{f08ae} 54\u{b0}   \u{f01da} 1.2M \u{f0552} 80K   \u{f02ca} 62%   \u{f061a} 12%");
+}
+
+#[test]
+fn the_bar_shows_the_fullest_disk() {
+    let s = Sample { disks: [Some(40), Some(87), None, None], ..Sample::default() };
+    let (t, _) = items(&resources_with(s), &[ResourceItem::Disk], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f02ca} 87%");
+    let s = Sample { cpu: Some(12), disks: [None; crate::system::DISKS], ..Sample::default() };
+    let (t, _) = items(&resources_with(s), &[ResourceItem::Cpu, ResourceItem::Disk], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f061a} 12%", "no reading, no disk figure");
 }
 
 #[test]
@@ -969,9 +979,30 @@ fn the_gpu_errs_from_85() {
 }
 
 #[test]
+fn the_bar_shows_gpu_usage_then_both() {
+    use crate::system::GpuBusy;
+    let busy = Some(GpuBusy { percent: 23, idle_based: false });
+    let s = Sample { gpu_busy: busy, ..Sample::default() };
+    let (t, _) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f08ae} 23%");
+    let s = Sample { gpu_busy: busy, gpu: Some(90), ..Sample::default() };
+    let (t, st) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f08ae} 23% 90\u{b0}");
+    assert_eq!(st, ".".repeat(5) + &"e".repeat(4), "the degrees alone in the error colour");
+    let s = Sample { gpu_busy: busy, gpu: Some(54), ..Sample::default() };
+    let (_, st) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::Full).unwrap();
+    assert_eq!(st, "p".repeat(9));
+}
+
+#[test]
 fn extra_items_take_their_hues() {
     use ResourceItem::*;
-    let s = Sample { net: Some(NetRate { down: 1_258_291, up: 81_920 }), disk: Some(62), gpu: Some(54), ..Sample::default() };
+    let s = Sample {
+        net: Some(NetRate { down: 1_258_291, up: 81_920 }),
+        disks: [Some(62), None, None, None],
+        gpu: Some(54),
+        ..Sample::default()
+    };
     let r = resources_with(s);
     let (_, st) = items(&r, &[Net, Disk, Gpu], ModuleColors::Full).unwrap();
     assert_eq!(st, "c".repeat(12) + &"B".repeat(8) + &"p".repeat(8));

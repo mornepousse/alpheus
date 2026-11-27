@@ -464,16 +464,25 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
                     figure(&mut pieces, "", UPLOAD, Hue::Cyan, rate(n.up), mc);
                 }
             }
+            // The fullest of the listed paths: see docs/decisions.md, "The bar shows the fullest
+            // disk, the popup one block per path".
             ResourceItem::Disk => {
-                if let Some(d) = s.disk {
+                if let Some(d) = s.disks.iter().flatten().max() {
                     figure(&mut pieces, gap, HARDDISK, Hue::Blue, format!("{d}%"), mc);
                 }
             }
-            ResourceItem::Gpu => {
-                if let Some(t) = s.gpu {
-                    temperature_figure(&mut pieces, gap, GPU, t, Hue::Purple, mc);
+            // Usage when read, the degrees when read, both one after the other (`gpu_metric`).
+            ResourceItem::Gpu => match (s.gpu_busy, s.gpu) {
+                (Some(b), t) => {
+                    figure(&mut pieces, gap, GPU, Hue::Purple, format!("{}%", b.percent), mc);
+                    if let Some(t) = t {
+                        let style = if t >= HOT { Style::ERROR } else { text_style(mc, Hue::Purple, Style::NORMAL) };
+                        pieces.push(piece(format!(" {t}°"), style));
+                    }
                 }
-            }
+                (None, Some(t)) => temperature_figure(&mut pieces, gap, GPU, t, Hue::Purple, mc),
+                (None, None) => {}
+            },
         }
     }
     if pieces.is_empty() {

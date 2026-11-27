@@ -5,7 +5,8 @@
 use super::*;
 use crate::config::ResourceItem::{Cpu, Disk, Gpu, Memory, Net, Temperature};
 use crate::grid::Hue;
-use crate::system::{HISTORY, NetRate, Sample};
+use crate::system::{DISKS, GpuBusy, HISTORY, NetRate, Sample};
+use std::path::{Path, PathBuf};
 
 /// The text of each row, without its trailing blanks.
 fn row_texts(b: &Boxed) -> Vec<String> {
@@ -29,7 +30,7 @@ fn history_of_one(s: Sample) -> History {
 
 /// The newest point of the item's first series, for a ring holding only `s`.
 fn newest_point_of(item: ResourceItem, s: Sample) -> Option<u16> {
-    *series(item, &history_of_one(s))[0].last().expect("a series is never empty")
+    *series(item, 0, &history_of_one(s))[0].last().expect("a series is never empty")
 }
 
 #[test]
@@ -37,7 +38,7 @@ fn each_item_scales_to_permille_and_the_edges_never_overflow_or_divide_by_zero()
     for (cpu, want) in [(0u8, 0u16), (50, 500), (100, 1000)] {
         assert_eq!(newest_point_of(Cpu, Sample { cpu: Some(cpu), ..Sample::default() }), Some(want), "cpu {cpu}");
     }
-    assert_eq!(newest_point_of(Disk, Sample { disk: Some(62), ..Sample::default() }), Some(620));
+    assert_eq!(newest_point_of(Disk, Sample { disks: [Some(62), None, None, None], ..Sample::default() }), Some(620));
     let mem = Sample { memory: Some(61), memory_total: Some(155), ..Sample::default() };
     assert_eq!(newest_point_of(Memory, mem), Some(61 * 1000 / 155));
     assert_eq!(newest_point_of(Memory, Sample { memory: Some(61), memory_total: None, ..Sample::default() }), None, "no total, no point");
@@ -53,26 +54,26 @@ fn each_item_scales_to_permille_and_the_edges_never_overflow_or_divide_by_zero()
     }
     // The ring is always HISTORY long: leading gaps until it is full (a fixed time axis).
     let h = history_of_one(Sample { cpu: Some(50), ..Sample::default() });
-    let s = &series(Cpu, &h)[0];
+    let s = &series(Cpu, 0, &h)[0];
     assert_eq!(s.len(), HISTORY);
     assert!(s[..HISTORY - 1].iter().all(Option::is_none) && s[HISTORY - 1] == Some(500));
 
     let zero = Sample { net: Some(NetRate { down: 0, up: 0 }), ..Sample::default() };
     let h = history_of_one(zero);
     assert_eq!(net_top(&h), Some(NET_FLOOR));
-    let n = series(Net, &h);
+    let n = series(Net, 0, &h);
     assert_eq!(n.len(), 2, "down and up");
     assert!(n.iter().all(|s| s[HISTORY - 1] == Some(0)));
     let huge = Sample { net: Some(NetRate { down: u64::MAX, up: 1 }), ..Sample::default() };
     let h = history_of_one(huge);
     assert_eq!(net_top(&h), Some(u64::MAX));
-    assert_eq!(series(Net, &h)[0][HISTORY - 1], Some(1000), "no overflow");
-    assert_eq!(series(Net, &h)[1][HISTORY - 1], Some(0));
+    assert_eq!(series(Net, 0, &h)[0][HISTORY - 1], Some(1000), "no overflow");
+    assert_eq!(series(Net, 0, &h)[1][HISTORY - 1], Some(0));
     let none = history_of_one(Sample::default());
     assert_eq!(net_top(&none), None);
-    assert!(series(Net, &none).iter().all(|s| s.iter().all(Option::is_none)));
+    assert!(series(Net, 0, &none).iter().all(|s| s.iter().all(Option::is_none)));
     let half = history_of_one(Sample { net: Some(NetRate { down: NET_FLOOR * 2, up: NET_FLOOR }), ..Sample::default() });
-    assert_eq!(series(Net, &half)[1][HISTORY - 1], Some(500), "both over the one top");
+    assert_eq!(series(Net, 0, &half)[1][HISTORY - 1], Some(500), "both over the one top");
 }
 
 /// A pass with no net reading (no route for a moment) is skipped: the search neither stops there
@@ -135,7 +136,7 @@ fn an_item_with_no_figure_keeps_its_block_so_the_size_never_changes() {
     let (down, up) = (&empty.graphs[0].series[0], &empty.graphs[0].series[1]);
     assert_eq!((down.ink, down.fill), (Tint::Hue(Hue::Cyan), true));
     assert_eq!((up.ink, up.fill), (Tint::FgDim, false));
-    let full = Sample { net: Some(NetRate { down: 5, up: 6 }), disk: Some(40), gpu: Some(50), ..Sample::default() };
+    let full = Sample { net: Some(NetRate { down: 5, up: 6 }), disks: [Some(40), None, None, None], gpu: Some(50), ..Sample::default() };
     let with = ResourcesPopup::default().render(&resources_with_history(&[full]), &c);
     assert_eq!(with.cells(), empty.cells(), "the size never depends on the figures");
     assert_eq!(row_texts(&with).len(), row_texts(&empty).len());
@@ -167,6 +168,49 @@ fn a_temperature_from_85_is_in_the_error_colour_and_the_net_figure_leads_with_it
     };
     assert_eq!(style_of("peak"), Style::MUTED);
     assert_eq!(style_of("1.2M"), Style::hue(Hue::Cyan));
+}
+
+#[test]
+fn the_intel_estimate_reads_active() {
+    let c = ResourcesConfig { show: vec![Gpu], ..ResourcesConfig::default() };
+    let s = Sample { gpu_busy: Some(GpuBusy { percent: 25, idle_based: true }), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    assert!(row_texts(&b)[1].ends_with("active 25%"), "{:?}", row_texts(&b)[1]);
+    let row = b.rows[1].text();
+    let col = row[..row.find("active").unwrap()].chars().count();
+    assert_eq!(b.rows[1].cells()[col].style, Style::MUTED, "the word is dim");
+    let col = row[..row.find("25%").unwrap()].chars().count();
+    assert_eq!(b.rows[1].cells()[col].style, Style::hue(Hue::Purple));
+    let exact = Sample { gpu_busy: Some(GpuBusy { percent: 25, idle_based: false }), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[exact]), &c);
+    assert!(!b.rows[1].text().contains("active"), "amdgpu's busy share is no estimate");
+}
+
+#[test]
+fn the_gpu_block_shows_vram_and_plots_usage() {
+    let busy = |p| Some(GpuBusy { percent: p, idle_based: false });
+    let c = ResourcesConfig { show: vec![Gpu], ..ResourcesConfig::default() };
+    let s = Sample { gpu_busy: busy(23), vram: Some(41), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    let row = &row_texts(&b)[1];
+    assert!(row.ends_with("vram 41% 23%"), "{row:?}");
+    let style_of = |b: &Boxed, needle: &str| {
+        let hay = b.rows[1].text();
+        let col = hay[..hay.find(needle).expect(needle)].chars().count();
+        b.rows[1].cells()[col].style
+    };
+    assert_eq!(style_of(&b, "vram"), Style::MUTED);
+    assert_eq!(style_of(&b, "23%"), Style::hue(Hue::Purple));
+    // Usage and degrees together: the degrees follow, in the error colour from 85 °C.
+    let both = Sample { gpu_busy: busy(23), vram: Some(41), gpu: Some(90), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[both]), &c);
+    assert!(row_texts(&b)[1].ends_with("vram 41% 23% 90°"), "{:?}", row_texts(&b)[1]);
+    assert_eq!(style_of(&b, "90°"), Style::ERROR);
+    // The graph plots usage when any sample of the ring has it, the degrees otherwise.
+    let h = resources_with_history(&[Sample { gpu: Some(54), ..Sample::default() }, both]).history;
+    let points = &series(Gpu, 0, &h)[0];
+    assert_eq!(&points[HISTORY - 2..], &[None, Some(230)], "usage permille, a sample without usage is a gap");
+    assert_eq!(newest_point_of(Gpu, Sample { gpu: Some(54), ..Sample::default() }), Some(540), "no usage anywhere: degrees");
 }
 
 /// The widest net row: `peak` and both rates at the five-cell cap (`9999G`; 1023 MiB/s itself reads
@@ -265,4 +309,53 @@ fn no_monitor_row_without_a_command() {
     assert_eq!(p.key(Key::Escape), ResourcesAction::Close);
     let with = ResourcesPopup::new(true).render(&Resources::default(), &c);
     assert_eq!(with.rows.len(), 12);
+}
+
+#[test]
+fn one_block_per_mount_and_monitor_row_follows() {
+    let mounts = ["/fictional/a", "/fictional/b", "/fictional/c"];
+    let c =
+        ResourcesConfig { show: vec![Disk, Cpu], disk_mounts: mounts.iter().map(PathBuf::from).collect(), ..ResourcesConfig::default() };
+    assert_eq!(blocks(&c), [(Disk, 0), (Disk, 1), (Disk, 2), (Cpu, 0)]);
+    let s = Sample { cpu: Some(12), disks: [Some(40), None, Some(87), None], ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    let t = row_texts(&b);
+    assert_eq!(monitor_row(&c), 2 + 3 * 4);
+    assert_eq!(t[usize::from(monitor_row(&c))], " Monitor…");
+    assert_eq!(b.graphs.len(), 4);
+    for (i, g) in b.graphs.iter().enumerate() {
+        assert_eq!(g.row, 2 + BLOCK * i, "graph {i}");
+    }
+    // Each block its own path and figure, in order; a path with no reading shows `—`.
+    assert!(t[1].contains("/fictional/a") && t[1].ends_with("40%"), "{:?}", t[1]);
+    assert!(t[4].contains("/fictional/b") && t[4].ends_with('—'), "{:?}", t[4]);
+    assert!(t[7].contains("/fictional/c") && t[7].ends_with("87%"), "{:?}", t[7]);
+    assert!(t[10].contains("CPU") && t[10].ends_with("12%"), "{:?}", t[10]);
+    assert_eq!(b.graphs[2].series[0].points[HISTORY - 1], Some(870), "the third block plots the third disk");
+    assert_eq!(b.graphs[1].series[0].points[HISTORY - 1], None);
+}
+
+#[test]
+fn a_mount_block_is_named_by_its_path_left_truncated() {
+    let l = mount_label(Path::new("/fictional/very/long/path/to/a/mount"), 12);
+    assert!(l.starts_with('…') && l.ends_with("a/mount"), "{l:?}");
+    assert!(text_width(&l) <= 12, "{l:?}");
+    assert_eq!(mount_label(Path::new("/"), 12), "/", "a short path is kept whole");
+    assert_eq!(mount_label(Path::new("/fictional/a"), 0), "");
+    // A long path on a full popup row still leaves the figure its place.
+    let long = "/fictional/a/path/far/too/long/for/the/popup/row/to/hold/whole";
+    let c = ResourcesConfig { show: vec![Disk], disk_mounts: vec![PathBuf::from(long)], ..ResourcesConfig::default() };
+    let s = Sample { disks: [Some(87), None, None, None], ..Sample::default() };
+    let t = row_texts(&ResourcesPopup::default().render(&resources_with_history(&[s]), &c));
+    assert!(t[1].ends_with(" 87%") && t[1].contains("…") && t[1].contains("to/hold/whole"), "{:?}", t[1]);
+}
+
+#[test]
+fn no_mounts_keeps_the_disk_block_name() {
+    let c = ResourcesConfig { show: vec![Disk], ..ResourcesConfig::default() };
+    assert_eq!(blocks(&c), [(Disk, 0)]);
+    let s = Sample { disks: [Some(62), None, None, None], ..Sample::default() };
+    let t = row_texts(&ResourcesPopup::default().render(&resources_with_history(&[s]), &c));
+    assert!(t[1].contains("Disk") && t[1].ends_with("62%"), "{:?}", t[1]);
+    assert_eq!(DISKS, 4);
 }

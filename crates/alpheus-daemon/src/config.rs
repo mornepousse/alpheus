@@ -26,8 +26,12 @@
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
-//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem), "gpu"
-//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
+//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" (disk_mounts, else $HOME's filesystem), "gpu"
+//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia), also the card's driver for usage; "": automatic
+//! gpu_metric = "auto"   # "auto" | "usage" | "temp" | "both": auto shows usage when a card offers it (amdgpu, i915, xe), else the temperature
+//! net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
+//! disk_mounts = []   # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem; a path on a network filesystem (nfs, cifs, sshfs…) or an automount shows —
+//! disk_interval = 15   # seconds between disk readings, 1 to 300; the last figures repeat in between
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
@@ -122,6 +126,7 @@
 
 use crate::clock;
 use crate::grid::text_width;
+use crate::system::DISKS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -341,6 +346,12 @@ impl Default for ActionsConfig {
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
+/// Longest `[resources] disk_interval`, in seconds (five minutes).
+pub const DISK_INTERVAL_MAX: u64 = 300;
+
+/// Longest interface name the kernel accepts (`IFNAMSIZ` 16, less the final NUL).
+pub const NET_INTERFACE_MAX: usize = 15;
+
 /// One figure of the resources module, in the order `[resources] show` lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -367,6 +378,19 @@ impl ResourceItem {
     }
 }
 
+/// What the `gpu` item shows: its usage (and VRAM in the popup), its temperature, or both. Decided
+/// once at start; only what it names is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuMetric {
+    /// Usage when a card offering it is found at start, else the temperature.
+    #[default]
+    Auto,
+    Usage,
+    Temp,
+    Both,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResourcesConfig {
@@ -379,8 +403,19 @@ pub struct ResourcesConfig {
     pub sensor: String,
     /// The figures shown, in this order (never empty, no repeat).
     pub show: Vec<ResourceItem>,
-    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia); empty = automatic.
+    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia), and the driver of the card read for
+    /// usage (amdgpu, i915, xe); empty = automatic (for usage, the `boot_vga` card only).
     pub gpu_sensor: String,
+    /// What `gpu` shows: usage, temperature, or both (`auto`: usage when a card offers it).
+    pub gpu_metric: GpuMetric,
+    /// The interface whose throughput `net` shows; empty = the IPv4 default route's.
+    pub net_interface: String,
+    /// The paths whose filesystems `disk` measures, in order (at most `DISKS`, absolute, no
+    /// repeat); empty = `$HOME`'s.
+    pub disk_mounts: Vec<PathBuf>,
+    /// Seconds between two readings of the disks (1 to 300): the first pass reads them, the
+    /// passes in between repeat the last figures.
+    pub disk_interval: u64,
 }
 
 impl Default for ResourcesConfig {
@@ -391,6 +426,10 @@ impl Default for ResourcesConfig {
             sensor: String::new(),
             show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
             gpu_sensor: String::new(),
+            gpu_metric: GpuMetric::Auto,
+            net_interface: String::new(),
+            disk_mounts: Vec::new(),
+            disk_interval: 15,
         }
     }
 }
@@ -1351,6 +1390,31 @@ impl BarConfig {
             if b.resources.show[..i].contains(item) {
                 return Err(format!("resources.show: duplicate {:?}", item.name()));
             }
+        }
+        let n = &b.resources.net_interface;
+        if n.len() > NET_INTERFACE_MAX || n.contains(['/', ':']) || n.chars().any(char::is_whitespace) {
+            return Err("resources.net_interface: not an interface name (at most 15 bytes, no '/', ':' or space)".into());
+        }
+        // The paths stay out of the messages: a mount's name can be private (docs/decisions.md).
+        let mounts = &b.resources.disk_mounts;
+        if mounts.len() > DISKS {
+            return Err(format!("resources.disk_mounts: {} entries, at most {DISKS}", mounts.len()));
+        }
+        for (i, path) in mounts.iter().enumerate() {
+            if !path.is_absolute() {
+                return Err(format!("resources.disk_mounts: entry {} is not an absolute path", i + 1));
+            }
+            // Never resolved (resolving could hang on a network mount), so a `..` would match the
+            // path against the wrong mount point.
+            if path.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(format!("resources.disk_mounts: entry {} holds a '..' component", i + 1));
+            }
+            if mounts[..i].contains(path) {
+                return Err(format!("resources.disk_mounts: entry {} repeats an earlier one", i + 1));
+            }
+        }
+        if !(1..=DISK_INTERVAL_MAX).contains(&b.resources.disk_interval) {
+            return Err(format!("resources.disk_interval {} out of range 1 to {DISK_INTERVAL_MAX} s", b.resources.disk_interval));
         }
         for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
