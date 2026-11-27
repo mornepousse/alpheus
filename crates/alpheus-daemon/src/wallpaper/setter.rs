@@ -19,7 +19,8 @@
 //! - start a name that is not a plain image name of a file in the folder;
 //! - log or panic: the glue (`app.rs`) logs one fixed word per ending.
 //!
-//! See: docs/features/wallpaper.md, docs/superpowers/specs/2026-11-27-wallpaper-design.md.
+//! See: docs/features/wallpaper.md, docs/decisions.md ("The wallpaper setter is alpheus's child,
+//! replaced new-first..."), docs/superpowers/specs/2026-11-27-wallpaper-design.md.
 
 use super::{WallpaperConfig, fill, is_image_name, is_plain_name};
 use crate::launcher::run::{self, RunContext};

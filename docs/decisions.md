@@ -2193,3 +2193,20 @@ grace follows, a source going down takes a new baseline. Bluetooth shows on a po
 never a device, and no pill or log line names a device or a profile.
 
 Date: 2026-11-27 · Source: tests `osd_kinds_default_is_the_three_levels`, `osd_dnd_kind_needs_the_notifications_module` (`config/tests.rs`), `osd_without_sound_kinds_needs_no_sound`, `osd_kinds_bring_their_source`, `kinds_without_the_osd_module_bring_nothing` (`startup/tests.rs`), `passive_first_value_is_the_baseline`, `passive_a_source_going_down_takes_a_new_baseline`, `bluetooth_device_changes_do_not_show` (`osd/tests.rs`), `the_osd_logs_are_fixed_words` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`
+
+### The wallpaper setter is alpheus's child, replaced new-first and ended only by its handle; it dies with the daemon, which re-applies the last choice at start
+
+alpheus never draws a wallpaper: it starts the user's own setter (swaybg, wbg, `swww img`) with the
+chosen file as one argument, as a watched child of the daemon started on the event loop's thread,
+so the setter's parent-death signal is the daemon's own and it goes with the bar. A new setter
+starts first and the old one is dropped only once the new one runs (a one-shot only once it exits
+0), so the screen never flashes empty and a setter that cannot start leaves the wallpaper as it was.
+The only way a setter ends is the drop of the handle alpheus holds, which kills that child's own
+process group and reaps it: alpheus never signals, searches by name or reads a PID of a process it
+did not start, so a swaybg started by the compositor is left alone (the feature page says to remove
+it). Since the setter dies with the daemon, the daemon applies the remembered name again at start,
+without `then` (the colour files it writes are already there). With `remember = false` nothing is
+written to disk; `--wallpaper next` then steps from the name the running daemon last applied.
+Rotation is an external timer calling `--wallpaper next`: the daemon keeps no timer for it.
+
+Date: 2026-11-27 · Source: tests `the_wallpaper_ends_only_the_setter_it_started` (`tests/guardrails.rs`, owner decision 9), `a_restart_drops_only_the_old_handle_after_the_new_one_started`, `a_one_shot_setter_succeeds_only_on_exit_zero` (`wallpaper/setter/tests.rs`), `the_remembered_wallpaper_is_applied_at_start_without_then`, `next_without_remember_steps_from_the_name_last_applied` (`wallpaper/app/tests.rs`), `wallpaper_setter_dies_with_the_daemon`, `tools_wallpaper_replaces_the_setter` (`tests/headless_session.rs`), `at_rest_no_wakeups_with_a_wallpaper_setter`, `wallpaper_setter_replaced_50_times_no_growth` (`tests/memory.rs`); spec `docs/superpowers/specs/2026-11-27-wallpaper-design.md`

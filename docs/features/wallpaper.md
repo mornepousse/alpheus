@@ -5,10 +5,6 @@ decodes the image: it starts your own setter (swaybg, wbg, swww) with the file, 
 command after it (matugen, so the bar's colours follow), and starts it again with the last choice
 when the daemon starts.
 
-This page grows with the feature: the setter, the Tools menu entry, the re-apply at start and the
-`--wallpaper next` verb are built; the proof and the full cost follow
-(`docs/superpowers/plans/2026-11-27-wallpaper.md`).
-
 ## Using it
 
 Set `[wallpaper]` (a folder and your setter's command). Super+X shows **Wallpaper** in Utilities
@@ -121,7 +117,14 @@ start.
 - Headless: `wallpaper_reapplied_at_start` (the remembered file, `then` not run),
   `wallpaper_next_steps_through_the_folder` (`a.png` then `b.png`, `then` after each),
   `wallpaper_next_steps_without_remember` (the same with `remember = false`, no state file),
-  `wallpaper_setter_dies_with_the_daemon`.
+  `wallpaper_setter_dies_with_the_daemon`,
+  `tools_panel_at_rest_no_wakeups_after_a_cycle_with_a_wallpaper` (the entry shown, no loop
+  wake-up after moves, no setter started).
+- Memory (release): `small_features_cost_nothing_at_start` (an idle `[wallpaper]` on an empty
+  folder, anonymous memory within 128 KB of none), `at_rest_no_wakeups_with_a_wallpaper_setter`
+  (a setter running, 0 loop wake-ups in 5 s), `wallpaper_setter_replaced_50_times_no_growth` (one
+  setter left, no thread left, anonymous memory within 1 MB), `tools_wallpaper_2000_files`,
+  `startup_pss_per_source` (its `+ wallpaper` case).
 - `a_restart_drops_only_the_old_handle_after_the_new_one_started`,
   `a_one_shot_setter_succeeds_only_on_exit_zero`,
   `a_failed_set_runs_no_then_and_keeps_the_remembered_name`,
@@ -130,13 +133,23 @@ start.
 
 ## What it costs
 
-- Off: nothing. The `Setter` on `App` is three empty options (the figure is in
-  [../measurements.md](../measurements.md)); nothing is read or started.
-- A setter running: its handle, one pidfd and one calloop source, no wake-up until it ends. The
-  setter itself is the user's program.
-- At start with a remembered name: the same setter running, the daemon's PSS and anonymous memory
-  within noise of the same start without it (figures in [../measurements.md](../measurements.md)).
+Release builds, back to back against main (529a0bc6) where main has a counterpart, 3 runs each;
+every figure is in [../measurements.md](../measurements.md).
+
+- Off: nothing. The `Setter` on `App` is three empty options, 128 bytes, no allocation; nothing is
+  read or started.
+- On, nothing remembered (`[wallpaper]` on an empty folder): the daemon's anonymous memory 0 / 0 /
+  +4 KB over the same start without it (`small_features_cost_nothing_at_start`, bound 128 KB).
+- A setter running: its handle, one pidfd and one calloop source. 0 loop and 0 whole-daemon
+  wake-ups in 5 s, no thread added (`at_rest_no_wakeups_with_a_wallpaper_setter`). The setter
+  itself is the user's program and its memory is its own.
+- At start with a remembered name: the same setter running, the daemon's PSS −121…+39 KB and
+  anonymous memory −92…+68 KB against the same start without it, within noise
+  (`startup_pss_per_source`'s `+ wallpaper` case).
+- `--wallpaper next` keeps nothing measurable between calls: after 50 of them (each a setter
+  started, the old one ended and reaped, the name saved) the anonymous memory and PSS are +0 KB
+  over the reading after the first two, one setter is left and no thread
+  (`wallpaper_setter_replaced_50_times_no_growth`). With `remember = false` it holds one name.
 - The Tools menu with `[wallpaper]` set: no syscall per open, the anonymous memory within noise
   of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names
-  show, back within +20 to +140 KB once closed, the reader thread gone (figures in
-  [../measurements.md](../measurements.md)).
+  show, back within +20 to +140 KB once closed, the reader thread gone.
