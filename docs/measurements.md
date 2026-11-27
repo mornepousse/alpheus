@@ -311,3 +311,18 @@ target directory, 3 runs each, 2026-11-27.
 | Step | Binary (stripped `alpheus-demon`) | `pss_under_budget_and_stable` (startup / after 8,200 events) | `at_rest_no_wakeups` |
 |---|---:|---|---|
 | Task 1: the binds parser (Mango), linked into no path yet | 10,094,416 → 10,094,416 B (+0: the unreferenced code is dropped at link) | base 9,866–9,892 / 11,153–11,173 KB; with it 9,204–9,645 / 9,929–11,197 KB: within noise | 0 in all, 5 threads, both builds, every run |
+
+Task 2, the Keybindings level (on pc-simu, release, base 687fc186 and the branch alternated, 3
+rounds, the memory lock held exclusively through the turnstile, 2026-11-27):
+
+| Test | Base 687fc186 | With the level |
+|---|---|---|
+| `tools_pss_open_and_closed` (20 cycles): PSS open over closed | +2,017…+2,049 KB | +1,997…+2,209 KB |
+| same: anonymous open over closed / closed again / after 20 more | +324…+356 / +32…+144 / −36…+108 KB | +304…+516 / +44…+164 / −20…+120 KB |
+| same: shm pools open over closed; threads | +1,792 KB; 5 → 5 | +1,792 KB; 5 → 5 |
+| `at_rest_no_wakeups_after_a_launcher_cycle` (5 s) | 2, 2, 0 wake-ups (base runs) | 0, 0, 0; 5 threads |
+| `binds_pss_open_and_closed` (new: Mango through a FakeMango, `binds_files` naming an invented 100-bind file in 5 groups, open, Esc, close, 20 cycles) | — | PSS +1,957…+1,969 KB open over closed (the box's pools, as Tools open); anonymous +280…+292 KB open, +4…+28 KB closed again, +64…+88 KB after 20 more; 3 → 3 threads |
+
+The level's 100 bindings cost no more than the panel's home open (anonymous open +280…+292 KB
+against the panel's +304…+516) and are freed with the level: closed again +4…+28 KB. The panel's
+figures stay within the base's spread.
