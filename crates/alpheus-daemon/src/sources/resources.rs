@@ -8,8 +8,10 @@
 //! sensor file stops existing (hwmon numbers are not stable across a reboot
 //! or a hot-(re)plug: never kept as a bare `hwmonN`), and the disks — each
 //! `disk_mounts` path, else `$HOME` — by `statvfs` once every `disk_interval`
-//! seconds, the last figures repeated in between (a hung network mount stalls
-//! that call: docs/decisions.md, "Disks are read every `disk_interval`
+//! seconds, the last figures repeated in between (a `disk_mounts` path on a
+//! network filesystem, found once at start in /proc/self/mountinfo, is never
+//! read and shows —; a hung `$HOME` mount would still stall that call:
+//! docs/decisions.md, "Disks are read every `disk_interval`
 //! seconds, the last figures repeat between reads"), and the GPU's usage and
 //! VRAM from its card's sysfs files (amdgpu's busy share, or Intel's estimate
 //! from idle residency; the card picked by its driver link, `gpu_metric` deciding at start what is read; docs/decisions.md, "GPU
@@ -269,6 +271,51 @@ pub fn disk_percent(fs: FsBlocks) -> Option<u8> {
         return None;
     }
     Some(((used * 100).div_ceil(denom)).min(100) as u8)
+}
+
+/// Filesystem types served over the network: a `disk_mounts` path on one is never `statvfs`-ed, so
+/// a server that stops answering can never block the loop (docs/decisions.md, "Disks are read every
+/// `disk_interval` seconds, the last figures repeat between reads").
+const NETWORK_FS: [&str; 9] = ["nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "sshfs", "9p", "ceph", "glusterfs"];
+
+/// A mount point of `/proc/self/mountinfo`, its `\NNN` octal escapes (a space is `\040`) undone.
+fn unescape(field: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let b = field.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let octal = b.get(i + 1..i + 4).filter(|d| b[i] == b'\\' && d.iter().all(|c| (b'0'..=b'7').contains(c)));
+        match octal {
+            Some(d) => {
+                out.push(d.iter().fold(0u8, |n, c| n.wrapping_mul(8).wrapping_add(c - b'0')));
+                i += 4;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+/// Whether `path` lies on a network filesystem, per `mountinfo` (the text of /proc/self/mountinfo):
+/// the mount with the longest mount point containing `path`, the later line on a tie (a mount over
+/// another). Matched by components, with no access to `path` itself (resolving it could hang on
+/// the very mount it is about): a symlink to a network mount is not followed.
+pub fn on_network_fs(mountinfo: &str, path: &Path) -> bool {
+    let mut best: Option<(usize, bool)> = None;
+    for line in mountinfo.lines() {
+        let mut fields = line.split(' ');
+        let Some(point) = fields.nth(4).map(unescape) else { continue };
+        let Some(fstype) = line.split_once(" - ").and_then(|(_, rest)| rest.split(' ').next()) else { continue };
+        let depth = point.components().count();
+        if path.starts_with(&point) && best.is_none_or(|(d, _)| depth >= d) {
+            best = Some((depth, NETWORK_FS.contains(&fstype)));
+        }
+    }
+    best.is_some_and(|(_, remote)| remote)
 }
 
 /// The drivers whose cards offer a usage figure without root, in the order the automatic pick
@@ -538,6 +585,8 @@ pub struct Reader {
     net: Option<(String, NetCounters, Instant)>,
     /// `[resources] disk_mounts`, or `$HOME` alone when the list is empty (nothing without either).
     disk_paths: Vec<PathBuf>,
+    /// Which `disk_mounts` paths lie on a network filesystem, decided once at start: never read.
+    disk_remote: [bool; DISKS],
     /// The last disk figures, copied into every sample until the next reading.
     disks: [Option<u8>; DISKS],
     /// When the disks were last read; None before the first pass that shows `disk`.
@@ -649,6 +698,13 @@ impl Reader {
             true if config.disk_mounts.is_empty() => roots.home.iter().cloned().collect(),
             true => config.disk_mounts.iter().take(DISKS).cloned().collect(),
         };
+        let mut disk_remote = [false; DISKS];
+        if show.contains(&ResourceItem::Disk) && !config.disk_mounts.is_empty() {
+            let mountinfo = std::fs::read_to_string(roots.root.join("proc/self/mountinfo")).unwrap_or_default();
+            for (remote, path) in disk_remote.iter_mut().zip(&disk_paths) {
+                *remote = on_network_fs(&mountinfo, path);
+            }
+        }
         Reader {
             roots,
             show,
@@ -659,6 +715,7 @@ impl Reader {
             net_interface,
             net: None,
             disk_paths,
+            disk_remote,
             disks: [None; DISKS],
             disks_at: None,
             disk_interval: Duration::from_secs(config.disk_interval),
@@ -746,9 +803,10 @@ impl Reader {
         if self.shows(ResourceItem::Disk) {
             if self.disk_due(now) {
                 // A failing call leaves that figure out until the next reading. `statvfs` runs on
-                // the loop: a hung network mount stalls it (documented on `disk_mounts`).
-                for (slot, path) in self.disks.iter_mut().zip(&self.disk_paths) {
-                    *slot = (self.roots.statfs)(path).and_then(disk_percent);
+                // the loop, so a listed path on a network filesystem is never asked (a hung server
+                // would stall it); `$HOME` is, whatever it lies on.
+                for ((slot, path), remote) in self.disks.iter_mut().zip(&self.disk_paths).zip(self.disk_remote) {
+                    *slot = if remote { None } else { (self.roots.statfs)(path).and_then(disk_percent) };
                 }
                 self.disks_at = Some(now);
             }
@@ -1117,6 +1175,51 @@ mod tests {
         let t = workstation("mounts");
         let mut r = mounts_reader(&t.0, &["/fictional/a", "/fictional/b"], listed);
         assert_eq!(r.sample().disks, [Some(62), Some(10), None, None]);
+    }
+
+    /// A trimmed /proc/self/mountinfo: local ext4 and btrfs, an NFS share with a btrfs mounted inside
+    /// it, an sshfs, a CIFS share whose mount point holds a space, and a tmpfs mounted over the
+    /// NFS share's `over` directory. Fictional paths and devices.
+    const MOUNTINFO: &str = "\
+22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/fictional2 rw
+30 22 259:3 / /fictional/data rw,relatime shared:2 - btrfs /dev/fictional3 rw
+41 22 0:50 / /fictional/nfs rw,relatime shared:3 - nfs4 server:/export rw,vers=4.2
+42 41 259:4 / /fictional/nfs/local rw,relatime shared:4 - btrfs /dev/fictional4 rw
+43 22 0:51 / /fictional/ssh rw,nosuid shared:5 - fuse.sshfs host:/ rw
+44 22 0:52 / /fictional/my\\040share rw shared:6 - cifs //server/share rw
+45 41 0:53 / /fictional/nfs/over rw shared:7 - nfs4 server:/other rw
+46 41 0:54 / /fictional/nfs/over rw shared:8 - tmpfs tmpfs rw
+";
+
+    #[test]
+    fn a_network_mount_is_found_by_its_longest_mount_point() {
+        let remote = |p: &str| on_network_fs(MOUNTINFO, Path::new(p));
+        assert!(!remote("/"));
+        assert!(!remote("/fictional/data/photos"));
+        assert!(remote("/fictional/nfs"));
+        assert!(remote("/fictional/nfs/deep/dir"));
+        assert!(!remote("/fictional/nfs/local"), "a local filesystem mounted inside the share");
+        assert!(!remote("/fictional/nfs/over"), "the later of two mounts on one point wins");
+        assert!(!remote("/fictional/nfsx"), "matched by components, not by text");
+        assert!(remote("/fictional/ssh/home"));
+        assert!(remote("/fictional/my share"), "the mount point's escapes are undone");
+        assert!(!on_network_fs("", Path::new("/fictional/nfs")), "no mountinfo: nothing is skipped");
+    }
+
+    #[test]
+    fn a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed() {
+        fn local_only(p: &Path) -> Option<FsBlocks> {
+            match p.to_str() {
+                Some("/fictional/data") => Some(FsBlocks { blocks: 1000, free: 380, avail: 380 }),
+                _ => panic!("statvfs of a network mount"),
+            }
+        }
+        let t = workstation("netfs");
+        put(&t.0, "proc/self/mountinfo", MOUNTINFO);
+        let mut r = mounts_reader(&t.0, &["/fictional/nfs/deep", "/fictional/data", "/fictional/ssh"], local_only);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).disks, [None, Some(62), None, None]);
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(15)).disks, [None, Some(62), None, None], "not on a later read either");
     }
 
     #[test]
