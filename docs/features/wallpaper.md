@@ -127,7 +127,7 @@ start.
 - Memory (release): `small_features_cost_nothing_at_start` (an idle `[wallpaper]` on an empty
   folder, anonymous memory within 128 KB of none), `at_rest_no_wakeups_with_a_wallpaper_setter`
   (a setter running, 0 loop wake-ups in 5 s), `wallpaper_setter_replaced_50_times_no_growth` (one
-  setter left, no thread left, anonymous memory within 1 MB), `tools_wallpaper_2000_files`,
+  setter left, no thread left, anonymous memory within 128 KB), `tools_wallpaper_2000_files`,
   `startup_pss_per_source` (its `+ wallpaper` case).
 - `a_restart_drops_only_the_old_handle_after_the_new_one_started`,
   `a_one_shot_setter_succeeds_only_on_exit_zero`,
@@ -151,8 +151,8 @@ every figure is in [../measurements.md](../measurements.md).
   anonymous memory −92…+68 KB against the same start without it, within noise
   (`startup_pss_per_source`'s `+ wallpaper` case).
 - `--wallpaper next` keeps nothing measurable between calls: after 50 of them (each a setter
-  started, the old one ended and reaped, the name saved) the anonymous memory and PSS are +0 KB
-  over the reading after the first two, one setter is left and no thread
+  started, the old one ended and reaped, the name saved) the anonymous memory is +0…+16 KB
+  over the reading after the first two (bound 128 KB), one setter is left and no thread
   (`wallpaper_setter_replaced_50_times_no_growth`). With `remember = false` it holds one name.
 - The Tools menu with `[wallpaper]` set: no syscall per open, the anonymous memory within noise
   of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names

@@ -5133,8 +5133,8 @@ fn at_rest_no_wakeups_with_a_wallpaper_setter() {
 }
 
 /// 50 `--wallpaper next` (each a setter started, the old one ended by its handle and reaped, the
-/// name saved): one setter left, no thread left, and the daemon's anonymous memory back within the
-/// launcher cycle test's bound. What `next` keeps between calls is this figure.
+/// name saved): one setter left, no thread left, and the daemon's anonymous memory back within
+/// 128 KB. What `next` keeps between calls is this figure.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn wallpaper_setter_replaced_50_times_no_growth() {
@@ -5187,8 +5187,8 @@ fn wallpaper_setter_replaced_50_times_no_growth() {
     assert_eq!(pids.iter().filter(|&&p| setter_alive(p)).count(), 1, "one setter left running");
     assert!(setter_alive(pids[51]), "the last one");
     assert_eq!(d.threads(), threads, "no thread left behind");
-    // The bound of `launcher_open_close_cycles_no_growth`, on anonymous memory.
-    assert!(end.1 <= warm.1 + 1024, "50 nexts: {} KB anon vs {} KB: more than 1 MB kept", end.1, warm.1);
+    // 128 KB, as `small_features_cost_nothing_at_start`: measured +0 KB, so a real leak per call shows.
+    assert!(end.1 <= warm.1 + 128, "50 nexts: {} KB anon vs {} KB: more than 128 KB kept", end.1, warm.1);
     assert!(
         d.log().iter().all(|l| ["a.png", "b.png", "c.png", "walls"].iter().all(|w| !l.contains(w))),
         "never a name or the folder: {:?}",
