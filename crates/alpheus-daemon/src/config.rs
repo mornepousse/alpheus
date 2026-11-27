@@ -405,14 +405,18 @@ impl<'de> Deserialize<'de> for Binding {
                 f.write_str("a verb (none, popup, quick, open_tab, launcher, dnd, mute) or an argument list")
             }
 
+            // Both errors are fixed words: serde's own would echo the value, and a string here may
+            // be a command written without its brackets, which the log must never carry.
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Binding, E> {
-                // Serde's own error names the accepted verbs.
-                Verb::deserialize(serde::de::value::StrDeserializer::<E>::new(v)).map(Binding::Verb)
+                Verb::deserialize(serde::de::value::StrDeserializer::<E>::new(v)).map(Binding::Verb).map_err(|_| {
+                    E::custom("unknown verb (expected none, popup, quick, open_tab, launcher, dnd or mute; a command is a list)")
+                })
             }
 
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Binding, A::Error> {
+                use serde::de::Error;
                 let mut argv = Vec::new();
-                while let Some(a) = seq.next_element::<String>()? {
+                while let Some(a) = seq.next_element::<String>().map_err(|_| A::Error::custom("every argument must be a string"))? {
                     argv.push(a);
                 }
                 Ok(Binding::Command(argv))
@@ -776,9 +780,11 @@ fn check_placeholders(key: &str, command: &[String], placeholders: &[(&str, usiz
             return Err(format!("{key}: \"{placeholder}\" must be a whole argument"));
         }
         let count = command.iter().filter(|a| a == placeholder).count();
+        if count > 0 && *most == 0 {
+            return Err(format!("{key}: \"{placeholder}\" is not accepted here"));
+        }
         if count < *least || count > *most {
             let wanted = match (least, most) {
-                (0, 0) => "not at all".to_string(),
                 (1, 1) => "exactly once".to_string(),
                 _ => format!("at most {most} time"),
             };

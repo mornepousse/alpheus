@@ -1289,7 +1289,7 @@ fn bindings_reject_blank_programs_unknown_modules_and_unknown_verbs() {
         ("[bindings.volume]\nright = [\" \"]", "bindings.volume.right"),
         ("[bindings.clock]\nwheel_down = [\"\"]", "bindings.clock.wheel_down"),
         ("[bindings.nowhere]\nright = [\"x\"]", "nowhere"),
-        ("[bindings.volume]\nright = \"explode\"", "explode"),
+        ("[bindings.volume]\nright = \"explode\"", "verb"),
         ("[bindings.volume]\nscroll = [\"x\"]", "scroll"),
     ] {
         let e = binding_err(text);
@@ -1372,6 +1372,12 @@ fn binding_errors_never_quote_the_command() {
     assert!(!e.contains("secret-tool"), "{e:?}");
     let e = binding_err("[bindings.clock]\nright = [\"secret-tool\", \"{tab}\"]");
     assert!(!e.contains("secret-tool"), "{e:?}");
+    assert!(e.contains("not accepted"), "{{tab}} on a tab-less module reads plainly: {e:?}");
+    // A command written as a string is an unknown verb: serde would echo it whole.
+    let e = binding_err("[bindings.volume]\nright = \"secret-tool --token\"");
+    assert!(!e.contains("secret-tool") && e.contains("open_tab"), "{e:?}");
+    let e = binding_err("[bindings.volume]\nright = [\"secret-tool\", 3]");
+    assert!(!e.contains("secret-tool") && !e.contains('3') && e.contains("string"), "{e:?}");
 }
 
 #[test]
