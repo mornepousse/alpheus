@@ -534,6 +534,8 @@ fn startup_pss_per_source() {
         cases.push(("+ failed", concat!(every_module!(), ", \"failed\""), ""));
         // A Bluetooth pill alone: the BlueZ domain without its module, and no pw-dump.
         cases.push(("+ osd kinds", "\"workspaces\", \"window\", \"osd\", \"clock\"", "[osd]\nkinds = [\"bluetooth\"]\n"));
+        // The keyboard module on the isolated Sway: one GET_INPUTS and two more events.
+        cases.push(("+ keyboard", concat!(every_module!(), ", \"keyboard\""), ""));
     }
     let mut report = Vec::new();
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
@@ -553,6 +555,10 @@ fn startup_pss_per_source() {
     // The failed count is a number per manager and a listener, nothing kept.
     if let Some((_, failed)) = report.iter().find(|(what, _)| *what == "+ failed") {
         assert!(*failed <= everything + 256, "+ failed {failed} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
+    // The layout and the mode are two short strings: no source of their own.
+    if let Some((_, keyboard)) = report.iter().find(|(what, _)| *what == "+ keyboard") {
+        assert!(*keyboard <= everything + 256, "+ keyboard {keyboard} KB vs everything {everything} KB: more than 256 KB at rest");
     }
     // A kind brings its source and nothing else: at most the D-Bus case's cost over the bar alone.
     if let Some((_, kinds)) = report.iter().find(|(what, _)| *what == "+ osd kinds") {
