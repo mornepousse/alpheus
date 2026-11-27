@@ -11,8 +11,8 @@
 //! seconds, the last figures repeated in between (a hung network mount stalls
 //! that call: docs/decisions.md, "Disks are read every `disk_interval`
 //! seconds, the last figures repeat between reads"). A file that can't be
-//! read leaves its own figure out; the next tick tries again (resources
-//! have no down state). `root` is "/" in the daemon, a temporary tree in
+//! read leaves its own figure out; the next tick tries again, the next
+//! `disk_interval` for a disk (resources have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
 //!
 //! Never:
