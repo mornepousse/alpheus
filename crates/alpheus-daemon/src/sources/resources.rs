@@ -11,8 +11,8 @@
 //! seconds, the last figures repeated in between (a hung network mount stalls
 //! that call: docs/decisions.md, "Disks are read every `disk_interval`
 //! seconds, the last figures repeat between reads"), and the GPU's usage and
-//! VRAM from its card's sysfs files (amdgpu; the card picked by its driver
-//! link, `gpu_metric` deciding at start what is read; docs/decisions.md, "GPU
+//! VRAM from its card's sysfs files (amdgpu's busy share, or Intel's estimate
+//! from idle residency; the card picked by its driver link, `gpu_metric` deciding at start what is read; docs/decisions.md, "GPU
 //! usage comes from sysfs only; NVIDIA proprietary shows —"). A file that
 //! can't be read leaves its own figure out; the next tick tries again, the
 //! next `disk_interval` for a disk (resources have no down state). `root` is
@@ -349,6 +349,32 @@ pub fn read_amdgpu(card: &Card) -> (Option<u8>, Option<u8>) {
     (busy, vram)
 }
 
+/// An Intel card's idle residency, ms (a counter since boot): i915's RC6 residency, from
+/// `gt/gt0/` (kernels with per-GT files), else from `power/` (older ones); xe's GT idle residency
+/// under its PCI device's `tile0/gt0/gtidle/`. None for amdgpu, or when the file can't be read.
+pub fn idle_ms(card: &Card) -> Option<u64> {
+    let number = |file: &str| first_line(&card.dir.join(file))?.parse::<u64>().ok();
+    match card.driver {
+        GpuDriver::I915 => number("gt/gt0/rc6_residency_ms").or_else(|| number("power/rc6_residency_ms")),
+        GpuDriver::Xe => number("device/tile0/gt0/gtidle/idle_residency_ms"),
+        GpuDriver::Amdgpu => None,
+    }
+}
+
+/// The share of the time between two idle readings the GPU was not idle, percent: 100 minus the
+/// idle share, rounded, clamped to 0..=100. None when no time elapsed or the counter went back (a
+/// wrap, or a reset). An estimate (docs/decisions.md, "Intel GPU usage is an idle-residency
+/// estimate, labelled active"): a GPU out of its idle state is not necessarily loaded.
+pub fn busy_from_idle(prev: (u64, Instant), now: (u64, Instant)) -> Option<u8> {
+    let idle = u128::from(now.0.checked_sub(prev.0)?);
+    let elapsed = now.1.checked_duration_since(prev.1)?.as_millis();
+    if elapsed == 0 {
+        return None;
+    }
+    let idle_share = (idle * 100 + elapsed / 2) / elapsed;
+    Some(100u128.saturating_sub(idle_share) as u8)
+}
+
 /// Whether the card drives the panel (`device/boot_vga` reads 1).
 fn boot_vga(card: &Card) -> bool {
     first_line(&card.dir.join("device/boot_vga")).is_some_and(|b| b == "1")
@@ -390,6 +416,9 @@ struct GpuUsage {
     last: (Option<GpuBusy>, Option<u8>),
     /// The hwmon temperature of the last read (`both`), repeated likewise.
     temperature: Option<i16>,
+    /// The previous idle reading of an Intel card and when, the estimate's baseline; dropped when the
+    /// card sleeps, so no difference spans a suspension.
+    idle: Option<(u64, Instant)>,
     /// Ticks left before picking again while there is no card.
     retry_in: u32,
 }
@@ -404,6 +433,7 @@ impl GpuUsage {
             read_at: None,
             last: (None, None),
             temperature: None,
+            idle: None,
             retry_in: 0,
         };
         usage.set(card);
@@ -421,6 +451,7 @@ impl GpuUsage {
         self.read_at = None;
         self.last = (None, None);
         self.temperature = None;
+        self.idle = None;
     }
 
     /// One pass; the figures are in `last`. A card that is gone is picked again at once, no card is
@@ -455,7 +486,12 @@ impl GpuUsage {
                 let (busy, vram) = read_amdgpu(card);
                 (busy.map(|percent| GpuBusy { percent, idle_based: false }), vram)
             }
-            GpuDriver::I915 | GpuDriver::Xe => (None, None),
+            GpuDriver::I915 | GpuDriver::Xe => {
+                let idle = idle_ms(card).map(|ms| (ms, now));
+                let busy = self.idle.zip(idle).and_then(|(prev, now)| busy_from_idle(prev, now));
+                self.idle = idle;
+                (busy.map(|percent| GpuBusy { percent, idle_based: true }), None)
+            }
         };
         UsagePass::Read
     }
@@ -1564,5 +1600,85 @@ mod tests {
         assert_eq!(r.sample_at(t0).gpu, Some(60));
         put(&t.0, "sys/class/hwmon/hwmon3/temp1_input", "61000\n");
         assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).gpu, Some(61));
+    }
+
+    /// An i915 card (the laptop's integrated GPU, `gt/gt0/rc6_residency_ms` as listed on 2026-11-27)
+    /// awake, its RC6 residency at `rc6` ms, no autosuspend delay (read every pass).
+    fn i915_tree(name: &str, rc6: &str) -> Tree {
+        let t = drm_tree(name, &[("card1", "i915")]);
+        put(&t.0, "sys/class/drm/card1/device/power/runtime_status", "active\n");
+        put(&t.0, "sys/class/drm/card1/gt/gt0/rc6_residency_ms", rc6);
+        t
+    }
+
+    const ESTIMATE_25: Option<GpuBusy> = Some(GpuBusy { percent: 25, idle_based: true });
+
+    #[test]
+    fn gpu_usage_from_rc6_is_one_minus_the_idle_share() {
+        let t = i915_tree("rc6", "1000\n");
+        let card = pick_card(&t.0, "").expect("the i915 card");
+        assert_eq!(idle_ms(&card), Some(1000));
+        let mut r = gpu_reader(&t.0, GpuMetric::Usage);
+        let t0 = Instant::now();
+        let s = r.sample_at(t0);
+        assert_eq!((s.gpu_busy, s.vram), (None, None), "the first pass has no earlier reading, like the CPU");
+        put(&t.0, "sys/class/drm/card1/gt/gt0/rc6_residency_ms", "2500\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).gpu_busy, ESTIMATE_25, "idle 1.5 s of 2 s");
+    }
+
+    #[test]
+    fn busy_from_idle_clamps_and_refuses_a_counter_going_back() {
+        let t0 = Instant::now();
+        let t2 = t0 + Duration::from_secs(2);
+        assert_eq!(busy_from_idle((1000, t0), (2500, t2)), Some(25));
+        assert_eq!(busy_from_idle((1000, t0), (1000, t2)), Some(100), "never idle");
+        assert_eq!(busy_from_idle((1000, t0), (1333, t0 + Duration::from_secs(1))), Some(67), "rounded");
+        assert_eq!(busy_from_idle((1000, t0), (3500, t2)), Some(0), "idle longer than the interval: clamped");
+        assert_eq!(busy_from_idle((2500, t0), (1000, t2)), None, "the counter went back");
+        assert_eq!(busy_from_idle((1000, t0), (1500, t0)), None, "no time elapsed");
+    }
+
+    #[test]
+    fn the_older_rc6_path_is_read_when_gt0_is_absent() {
+        let t = drm_tree("rc6old", &[("card1", "i915")]);
+        put(&t.0, "sys/class/drm/card1/power/rc6_residency_ms", "4200\n");
+        let card = pick_card(&t.0, "").unwrap();
+        assert_eq!(idle_ms(&card), Some(4200));
+        put(&t.0, "sys/class/drm/card1/gt/gt0/rc6_residency_ms", "7\n");
+        assert_eq!(idle_ms(&card), Some(7), "gt0 first when both exist");
+    }
+
+    #[test]
+    fn a_suspension_drops_the_idle_baseline() {
+        let t = i915_tree("rc6suspend", "1000\n");
+        let status = "sys/class/drm/card1/device/power/runtime_status";
+        let mut r = gpu_reader(&t.0, GpuMetric::Usage);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).gpu_busy, None);
+        put(&t.0, status, "suspended\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).gpu_busy, None, "asleep: not read");
+        put(&t.0, status, "active\n");
+        put(&t.0, "sys/class/drm/card1/gt/gt0/rc6_residency_ms", "9000\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(10)).gpu_busy, None, "a new baseline, no difference across the sleep");
+        put(&t.0, "sys/class/drm/card1/gt/gt0/rc6_residency_ms", "10500\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(12)).gpu_busy, ESTIMATE_25);
+    }
+
+    #[test]
+    fn xe_idle_residency_is_read_from_the_tile_tree() {
+        // Not seen on hardware: the tree follows the kernel's xe driver (xe_tile_sysfs.c adds
+        // `tile<N>` under the PCI device, xe_gt_sysfs.c `gt<N>` under it, xe_gt_idle.c `gtidle`
+        // with `idle_residency_ms`).
+        let t = drm_tree("xe", &[("card0", "xe")]);
+        put(&t.0, "sys/class/drm/card0/device/power/runtime_status", "active\n");
+        let file = "sys/class/drm/card0/device/tile0/gt0/gtidle/idle_residency_ms";
+        put(&t.0, file, "1000\n");
+        let card = pick_card(&t.0, "").unwrap();
+        assert_eq!((card.driver, idle_ms(&card)), (GpuDriver::Xe, Some(1000)));
+        let mut r = gpu_reader(&t.0, GpuMetric::Usage);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).gpu_busy, None);
+        put(&t.0, file, "2500\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).gpu_busy, ESTIMATE_25);
     }
 }

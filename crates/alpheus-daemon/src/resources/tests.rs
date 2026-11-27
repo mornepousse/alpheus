@@ -171,6 +171,22 @@ fn a_temperature_from_85_is_in_the_error_colour_and_the_net_figure_leads_with_it
 }
 
 #[test]
+fn the_intel_estimate_reads_active() {
+    let c = ResourcesConfig { show: vec![Gpu], ..ResourcesConfig::default() };
+    let s = Sample { gpu_busy: Some(GpuBusy { percent: 25, idle_based: true }), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    assert!(row_texts(&b)[1].ends_with("active 25%"), "{:?}", row_texts(&b)[1]);
+    let row = b.rows[1].text();
+    let col = row[..row.find("active").unwrap()].chars().count();
+    assert_eq!(b.rows[1].cells()[col].style, Style::MUTED, "the word is dim");
+    let col = row[..row.find("25%").unwrap()].chars().count();
+    assert_eq!(b.rows[1].cells()[col].style, Style::hue(Hue::Purple));
+    let exact = Sample { gpu_busy: Some(GpuBusy { percent: 25, idle_based: false }), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[exact]), &c);
+    assert!(!b.rows[1].text().contains("active"), "amdgpu's busy share is no estimate");
+}
+
+#[test]
 fn the_gpu_block_shows_vram_and_plots_usage() {
     let busy = |p| Some(GpuBusy { percent: p, idle_based: false });
     let c = ResourcesConfig { show: vec![Gpu], ..ResourcesConfig::default() };

@@ -242,7 +242,8 @@ fn figure(item: ResourceItem, index: usize, r: &Resources) -> Vec<(String, Style
             Some(t) => degrees_figure(t, hue),
             None => no_figure(),
         },
-        // A dim `vram` share first, then the usage, then the degrees: each when read.
+        // A dim `vram` share first, then the usage (after a dim `active` when it is Intel's
+        // idle-residency estimate), then the degrees: each when read.
         ResourceItem::Gpu => {
             if s.gpu_busy.is_none() && s.gpu.is_none() {
                 return no_figure();
@@ -252,6 +253,9 @@ fn figure(item: ResourceItem, index: usize, r: &Resources) -> Vec<(String, Style
                 pieces.push((format!("vram {v}% "), Style::MUTED));
             }
             if let Some(b) = s.gpu_busy {
+                if b.idle_based {
+                    pieces.push(("active ".to_string(), Style::MUTED));
+                }
                 pieces.push((format!("{}%", b.percent), Style::hue(hue)));
             }
             if let Some(t) = s.gpu {

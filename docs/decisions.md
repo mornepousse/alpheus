@@ -2069,7 +2069,8 @@ Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk
 ### GPU usage comes from sysfs only; NVIDIA proprietary shows —
 
 The `gpu` item shows usage from the card's own sysfs files, with no command and no library:
-amdgpu's `gpu_busy_percent` and its VRAM figures. The card is picked among
+amdgpu's `gpu_busy_percent` and its VRAM figures, or Intel's idle residency (see "Intel GPU usage
+is an idle-residency estimate, labelled active"). The card is picked among
 `/sys/class/drm/card<N>` by the file name of its `device/driver` link (only links are read for the
 pick); `amdgpu` first, then `i915` and `xe`, and any other driver never wins, so a DisplayLink
 `evdi` card or NVIDIA's proprietary one is never read. `device/power/runtime_status` is read before
@@ -2109,3 +2110,20 @@ are read beside the usage and hwmon files. Controller ruling, 2026-11-27 (to be 
 owner; reversible).
 
 Date: 2026-11-27 · Source: tests `auto_picks_only_the_boot_vga_card`, `only_an_active_card_is_read`, `usage_is_read_once_per_autosuspend_delay_and_a_second`, `no_autosuspend_delay_reads_every_pass`, `both_skips_the_sensor_of_a_sleeping_card`, `temp_spaces_the_hwmon_of_a_named_secondary_card`; kernel `drivers/gpu/drm/i915/gt/intel_gt_sysfs_pm.c` (`get_residency`), `drivers/gpu/drm/i915/intel_runtime_pm.c`, `drivers/gpu/drm/xe/xe_gt_idle.c`, `drivers/gpu/drm/amd/pm/amdgpu_pm.c`, `include/linux/pm_runtime.h`
+
+### Intel GPU usage is an idle-residency estimate, labelled active
+
+Intel's drivers expose no busy percent in sysfs, and engine load needs the i915/xe PMU
+(`perf_event_open`, `CAP_PERFMON` or root) or `intel_gpu_top` (a resident child): neither fits a
+bar that runs no command and asks for no privilege. What sysfs gives any user is idle residency: i915's
+RC6 residency (`gt/gt0/rc6_residency_ms`, else `power/rc6_residency_ms` on older kernels) and xe's
+GT idle residency (`device/tile0/gt0/gtidle/idle_residency_ms`). Two readings give the share of
+the time the GPU was idle; `gpu` shows 100 minus it, rounded and clamped, with a dim `active `
+before the percent in the popup, because a GPU kept out of its idle state is not necessarily
+loaded: the figure is time awake, not work done. The first pass after start, after a sleep or after
+the counter goes back (a wrap of the 32-bit millisecond counter, or a reset) has no figure, like the
+CPU's. The reads follow "A GPU's usage is read without keeping it awake" (once per autosuspend
+delay and a second, about 11 s on i915). The xe tree is taken from the kernel's driver
+(`xe_tile_sysfs.c`, `xe_gt_sysfs.c`, `xe_gt_idle.c`), not checked on xe hardware.
+
+Date: 2026-11-27 · Source: tests `gpu_usage_from_rc6_is_one_minus_the_idle_share`, `busy_from_idle_clamps_and_refuses_a_counter_going_back`, `the_older_rc6_path_is_read_when_gt0_is_absent`, `a_suspension_drops_the_idle_baseline`, `xe_idle_residency_is_read_from_the_tile_tree`, `the_intel_estimate_reads_active`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md` (draft Q2)

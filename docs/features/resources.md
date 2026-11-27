@@ -19,7 +19,7 @@ A left click on the resources module opens a popup under it:
   - the item's icon in its hue (CPU orange, Memory yellow, Temperature red, Network cyan, Disk
     blue, GPU purple, as on the bar), its name, and its current figure on the right:
     CPU `12%`; Memory `6.1G` then, dim, ` of 15.5G`; Temperature `54°`, in the error colour from
-    85 °C as on the bar; GPU its usage `23%`, preceded by a dim `vram 41% ` on amdgpu, and/or
+    85 °C as on the bar; GPU its usage `23%`, preceded by a dim `vram 41% ` on amdgpu or a dim `active ` on Intel, and/or
     `54°` as the temperature (both: `23% 54°`, per `gpu_metric`); Network `󰇚 1.2M 󰕒 80K` (download then upload), preceded by,
     dim, `peak 3.4M` (the graph's top); Disk `62%`; and a dim `—` when there is no figure;
   - a graph under it: the last 60 samples, the newest at the right edge, drawn in pixels by the
@@ -36,7 +36,12 @@ ring, never below 128 KiB/s so that an idle link does not fill it with noise.
 
 On the bar, `gpu` shows `󰢮 23%` (usage), `󰢮 54°` (temperature), or `󰢮 23% 54°` with
 `gpu_metric = "both"` (the degrees in the error colour from 85 °C). Usage comes from the card's
-sysfs files (amdgpu's `gpu_busy_percent` and VRAM figures), the card picked by its driver link
+sysfs files: amdgpu's `gpu_busy_percent` and VRAM figures, or on Intel an estimate from idle
+residency (i915's RC6 residency, `gt/gt0/rc6_residency_ms` or `power/rc6_residency_ms`; xe's
+`tile0/gt0/gtidle/idle_residency_ms`, from the kernel's driver, not checked on hardware): 100 minus
+the share of time the GPU spent idle since the previous reading, labelled `active` in the popup
+because a GPU out of its idle state is not necessarily loaded (no engine load without root). The
+card is picked by its driver link
 among the cards driving the panel (`boot_vga`; another only when `gpu_sensor` names it). Reading a
 usage file marks the card busy and restarts its autosuspend timer, so: a card that is not awake is
 not read at all, and an awake one at most once per its autosuspend delay and a second (about every
@@ -138,6 +143,9 @@ reading. The popup owns no timer: opening it adds no wake-up.
   the reads never keep the card from falling asleep; `auto_picks_only_the_boot_vga_card`;
   `a_monitor_only_card_never_wins` and `gpu_nvidia_proprietary_gives_nothing_and_no_panic`: an
   `evdi` or NVIDIA card is never picked for usage.
+- `gpu_usage_from_rc6_is_one_minus_the_idle_share` and `a_suspension_drops_the_idle_baseline`: the
+  Intel estimate is 100 minus the idle share between two readings, never across a sleep;
+  `the_intel_estimate_reads_active`: the popup says so.
 - `the_resources_popup_has_no_panicking_path`: neither file's production code panics.
 - `a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading`: a tick applies the
   reading before it repaints, repaints only while the popup is open, and the timer goes through
@@ -155,7 +163,8 @@ reading. The popup owns no timer: opening it adds no wake-up.
   block in the popup", "Each resources graph has a set scale; the network's follows its peak, with a
   floor", "The bar shows the fullest disk, the popup one block per path", "Disks are read every
   `disk_interval` seconds, the last figures repeat between reads", "GPU usage comes from sysfs only;
-  NVIDIA proprietary shows —", "A GPU's usage is read without keeping it awake", "The resources popup has no timer of its own", "The left click opens the resources popup and the
+  NVIDIA proprietary shows —", "A GPU's usage is read without keeping it awake", "Intel GPU usage is an idle-residency
+  estimate, labelled active", "The resources popup has no timer of its own", "The left click opens the resources popup and the
   right click runs `[actions] resources`", "Logs carry fixed words and numbers only".
 
 ## What it costs
