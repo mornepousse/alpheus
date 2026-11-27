@@ -431,8 +431,10 @@ character and a named key (an arrow, Enter, Escape) keeps its meaning, whatever 
 because a virtual keyboard (wtype, squeekboard) numbers its keys as it likes, and a letter it sent
 on code 3 read as row 2 could run Log out (which does not ask) at once. The layouts whose top row
 needs this type punctuation or accented letters there (AZERTY, Bépo, Czech, programmer Dvorak),
-never an ASCII letter, so the rule keeps them. The owner's decision 11 (2026-11-27), after the first
-version needed Shift on AZERTY.
+never an ASCII letter, so the rule keeps them. The risk left: a virtual keyboard that sends ASCII
+punctuation on the top row's codes is still read as a row digit while the menu is open, so a row
+that does not ask may run at once; rows that ask still need a second press. The owner's decision 11
+(2026-11-27), after the first version needed Shift on AZERTY.
 
 Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`, `the_top_rows_keys_are_digits_by_position`, `the_power_menu_reads_the_top_rows_digits_by_position`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`
 

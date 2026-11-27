@@ -53,7 +53,9 @@ that names one is refused (see Configuration).
   a pending question. The top row's keys count by position, whatever the layout types there: on
   AZERTY the `&` key is 1, no Shift needed. The keypad with NumLock works too, and a key that
   types a digit or an ASCII letter is always that character (a virtual keyboard may send one on a
-  top-row code).
+  top-row code). One risk is left: a virtual keyboard (wtype, squeekboard) that sends ASCII
+  punctuation on a top-row code is still read as that row's digit; a row that asks still needs a
+  second press.
 - **Esc**, or a click outside the menu, closes it. So does a change of style that moves the bar,
   or the output going away.
 - **The question.** A second activation counts only from 0.4 s after the question appeared, and
