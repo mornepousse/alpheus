@@ -10,6 +10,7 @@ use std::collections::HashMap;
 struct FakeFiles {
     texts: HashMap<PathBuf, String>,
     reads: RefCell<HashMap<PathBuf, usize>>,
+    lists: std::cell::Cell<usize>,
 }
 
 impl FakeFiles {
@@ -42,6 +43,7 @@ impl Files for FakeFiles {
     }
 
     fn list(&self, dir: &Path) -> Vec<PathBuf> {
+        self.lists.set(self.lists.get() + 1);
         let mut found: Vec<PathBuf> = self.texts.keys().filter(|p| p.parent() == Some(dir)).cloned().collect();
         found.sort();
         found
@@ -501,10 +503,11 @@ fn binds_sway_expands_set_variables_and_modes() {
     let b = sway("set $a foo\nset $b $a-bar\nbindsym Mod4+x exec $b $nope\n");
     assert_eq!(b.binds[0].command, "exec foo-bar $nope");
     // `set` variables are bounded as Mango's `env=` are.
-    let mut text: String = (0..70).map(|i| format!("set $v{i} x{i}\n")).collect();
-    text.push_str("bindsym Mod4+x exec $v0 $v63 $v64\n");
+    // (Names ending in `z`: no defined name is the start of another, the longest-first rule aside.)
+    let mut text: String = (0..70).map(|i| format!("set $v{i}z x{i}\n")).collect();
+    text.push_str("bindsym Mod4+x exec $v0z $v63z $v64z\n");
     let b = sway(&text);
-    assert_eq!((b.binds[0].command.as_str(), b.cut.vars), ("exec x0 x63 $v64", 70 - MAX_VARS));
+    assert_eq!((b.binds[0].command.as_str(), b.cut.vars), ("exec x0 x63 $v64z", 70 - MAX_VARS));
 }
 
 #[test]
@@ -654,4 +657,61 @@ fn sway_humanised_table() {
     ] {
         assert_eq!(describe::humanise(s, function, args), want, "{function} {args}");
     }
+}
+
+#[test]
+fn include_globs_stop_listing_once_the_file_slots_are_full() {
+    // Twenty `include dN/*`, one file each: the root takes a slot, seven globs fill the rest; the
+    // thirteen after are counted, never listed.
+    let texts: Vec<(String, String)> = (0..20).map(|i| (format!("/c/d{i:02}/x"), format!("bindsym Mod4+F{i} kill\n"))).collect();
+    let mut pairs: Vec<(&str, &str)> = texts.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let root: String = (0..20).map(|i| format!("include d{i:02}/*\n")).collect();
+    pairs.push(("/c/config", &root));
+    let files = FakeFiles::with(&pairs);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!(files.lists.get(), MAX_FILES - 1, "no folder listed once the slots are full");
+    assert_eq!((b.files.len(), b.cut.files), (MAX_FILES, 20 + 1 - MAX_FILES));
+}
+
+#[test]
+fn a_continued_line_past_the_bound_drops_its_rest_counted_once() {
+    let long = "x".repeat(MAX_LINE - 20);
+    let b = sway(&format!("bindsym Mod4+a exec {long} \\\n  {long} \\\n  tail\nbindsym Mod4+b kill\n"));
+    assert_eq!(b.binds.len(), 2);
+    assert!(!b.binds[0].command.contains("tail"), "the pieces after the bound are dropped");
+    assert!(b.binds[0].command.len() <= MAX_LINE);
+    assert_eq!(b.cut.lines, 1, "one joined line cut: counted once");
+    assert_eq!(b.binds[1].command, "kill");
+}
+
+#[test]
+fn sway_variables_expand_longest_name_first() {
+    let b = sway("set $mod Mod4\nset $ws-1 1\nbindsym $mod+1 workspace number $ws-1\nbindsym $modx kill\n");
+    let got: Vec<(&str, &str)> = b.binds.iter().map(|x| (x.combo.as_str(), x.command.as_str())).collect();
+    assert_eq!(got, [("Super+1", "workspace number 1"), ("Mod4x", "kill")]);
+    // The longer of two names that both match wins.
+    let b = sway("set $m Mod1\nset $mod Mod4\nbindsym $mod+q kill\n");
+    assert_eq!(b.binds[0].combo, "Super+Q");
+}
+
+#[test]
+fn an_include_strips_quotes_and_takes_home_like_a_tilde() {
+    let files = FakeFiles::with(&[
+        ("/c/config", "include \"/c/q one\"\ninclude '/c/q two'\ninclude $HOME/three\ninclude $NOPE/four\n"),
+        ("/c/q one", ""),
+        ("/c/q two", ""),
+    ]);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!((files.reads("/c/q one"), files.reads("/c/q two")), (1, 1));
+    assert_eq!(files.reads("~/three"), 1, "$HOME goes to the glue as ~");
+    assert_eq!(files.total_reads(), 4, "an unknown variable is not followed");
+    assert_eq!(b.not_understood, 1);
+}
+
+#[test]
+fn a_mode_past_the_depth_cap_never_changes_the_group() {
+    let modes: String = (1..=8).map(|i| format!("mode \"m{i}\" {{\n")).collect();
+    let b = sway(&format!("{modes}mode \"z\" {{\n}}\nbindsym a kill\n{}", "}\n".repeat(8)));
+    assert_eq!(b.binds.len(), 1);
+    assert_eq!(b.groups[b.binds[0].group], "m8");
 }

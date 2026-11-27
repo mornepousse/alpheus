@@ -204,7 +204,7 @@ impl Walk<'_> {
         let here = path.parent().unwrap_or(Path::new("/"));
         let includes = match self.st.dialect {
             Dialect::Mango => mango::parse(&text, here, &mut self.st),
-            Dialect::Sway => sway::parse(&text, here, &mut self.st, self.files),
+            Dialect::Sway => sway::parse(&text, here, &mut self.st, self.files, MAX_FILES.saturating_sub(self.taken.len())),
         };
         for p in includes {
             self.take(normal(&p));
@@ -324,6 +324,12 @@ impl Parse {
         }
     }
 
+    /// The longest defined variable name `text` starts with.
+    fn longest_var_at<'t>(&self, text: &'t str) -> Option<&'t str> {
+        let n = self.vars.iter().map(|(n, _)| n).filter(|n| !n.is_empty() && text.starts_with(n.as_str())).map(String::len).max()?;
+        text.get(..n)
+    }
+
     /// `text` with each `$NAME` or `${NAME}` defined in `vars` replaced; others kept. The result
     /// is cut at MAX_LINE.
     pub(crate) fn expand(&self, text: &str) -> String {
@@ -337,8 +343,17 @@ impl Parse {
                     Some(close) => (inner.get(..close).unwrap_or_default(), close + 2),
                     None => ("", 0),
                 },
+                // Sway tries the defined names longest first (`$ws-1`, and `$modx` is `$mod` then
+                // `x`); Mango's names are a run of letters, digits and `_`.
+                None if self.dialect == Dialect::Sway => match self.longest_var_at(after) {
+                    Some(n) => (n, n.len()),
+                    None => {
+                        let len = word_len(after);
+                        (after.get(..len).unwrap_or_default(), len)
+                    }
+                },
                 None => {
-                    let len = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+                    let len = word_len(after);
                     (after.get(..len).unwrap_or_default(), len)
                 }
             };
@@ -364,6 +379,11 @@ impl Parse {
         }
         out
     }
+}
+
+/// The length of the run of letters, digits and `_` `text` starts with.
+fn word_len(text: &str) -> usize {
+    text.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(text.len())
 }
 
 /// Text from a config file made safe to draw: control characters, escape sequences and

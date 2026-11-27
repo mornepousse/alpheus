@@ -50,6 +50,11 @@ impl Blocks {
         self.open.pop()
     }
 
+    /// Whether a block opened now would only be counted (past MAX_DEPTH).
+    fn full(&self) -> bool {
+        self.open.len() >= MAX_DEPTH || self.deeper > 0
+    }
+
     fn skipping(&self) -> bool {
         self.deeper > 0 || self.open.iter().any(|b| matches!(b, Block::Other))
     }
@@ -60,24 +65,29 @@ impl Blocks {
 }
 
 /// Parses one file's `text` (its folder is `here`) into `st`; gives the paths it includes, in
-/// order, a glob's matches sorted (through `files`, which lists the folder).
-pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files) -> Vec<PathBuf> {
+/// order, a glob's matches sorted (through `files`, which lists the folder). `free` is how many
+/// files the walk can still take: once that many paths are given, no glob is listed any more.
+pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files, free: usize) -> Vec<PathBuf> {
     let mut includes = Vec::new();
     let mut blocks = Blocks::default();
     let mut joined = String::new();
+    // Whether a piece of the line being joined went past MAX_LINE: the rest of it is dropped.
+    let mut dropped = false;
     for raw in text.lines() {
         // A trailing `\` joins the next line, up to MAX_LINE bytes.
         if let Some(head) = raw.strip_suffix('\\') {
-            if joined.len() + head.len() <= MAX_LINE {
-                joined.push_str(head);
-            }
+            let head = if joined.is_empty() { head } else { head.trim_start() };
+            join_piece(&mut joined, head, &mut dropped);
             continue;
         }
         let whole;
-        let raw = if joined.is_empty() {
+        let raw = if joined.is_empty() && !dropped {
             raw
         } else {
-            joined.push_str(raw.trim_start());
+            join_piece(&mut joined, raw.trim_start(), &mut dropped);
+            if std::mem::take(&mut dropped) {
+                st.out.cut.lines += 1;
+            }
             whole = std::mem::take(&mut joined);
             whole.as_str()
         };
@@ -108,7 +118,8 @@ pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files) 
         if let Some(head) = line.strip_suffix('{') {
             let (key, rest) = word(head.trim());
             let block = match key {
-                _ if blocks.skipping() => Block::Other,
+                // Past the depth cap the block is only counted: it never changes the group.
+                _ if blocks.skipping() || blocks.full() => Block::Other,
                 "mode" => Block::Mode(st.enter_group(mode_name(rest))),
                 "bindsym" | "bindcode" if words_are_flags(rest) => Block::Binds { code: key == "bindcode" },
                 _ => Block::Other,
@@ -140,7 +151,7 @@ pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files) 
             }
             "include" => {
                 let path = st.expand(rest.trim());
-                include(&path, here, files, st, &mut includes);
+                include(&path, here, files, st, &mut includes, free);
             }
             _ => {}
         }
@@ -198,11 +209,23 @@ fn bind(text: &str, code: bool, above: Option<String>, st: &mut Parse) {
     st.push(describe::combo(Dialect::Sway, mods, &key), description, action.to_string());
 }
 
-/// Queues the file(s) `path` names: relative to `here`, `~` left to the glue, a `*` or `?` in the
-/// last component matched against that folder's entries (hidden ones only by a pattern starting
-/// with `.`); a pattern before the last component is not followed and counted.
-fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut Vec<PathBuf>) {
+/// Queues the file(s) `path` names: its quotes taken off, relative to `here`, `~` and `$HOME` left
+/// to the glue (as `~`), a `*` or `?` in the last component matched against that folder's entries
+/// (hidden ones only by a pattern starting with `.`); a pattern before the last component, or a
+/// variable left unexpanded, is not followed and counted. Once `free` paths are queued, a glob is
+/// counted in `cut.files` instead of listed.
+fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut Vec<PathBuf>, free: usize) {
+    let path = unquote(path);
+    let home = match path.strip_prefix("$HOME") {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    };
+    let path = home.as_str();
     if path.is_empty() {
+        return;
+    }
+    if path.contains('$') {
+        st.out.not_understood += 1;
         return;
     }
     let path = if path == "~" || path.starts_with("~/") || path.starts_with('/') { PathBuf::from(path) } else { here.join(path) };
@@ -216,12 +239,45 @@ fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut
         out.push(path);
         return;
     }
+    if out.len() >= free {
+        st.out.cut.files += 1;
+        return;
+    }
     for entry in files.list(dir) {
         let name = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if (pattern.starts_with('.') || !name.starts_with('.')) && glob(&pattern, &name) {
             out.push(entry);
         }
     }
+}
+
+/// Adds `piece` to the line being joined, up to MAX_LINE bytes: the part past it, and every piece
+/// after it once `dropped`, is left out.
+fn join_piece(joined: &mut String, piece: &str, dropped: &mut bool) {
+    if *dropped {
+        return;
+    }
+    let room = MAX_LINE.saturating_sub(joined.len());
+    if piece.len() <= room {
+        joined.push_str(piece);
+        return;
+    }
+    let mut end = room;
+    while !piece.is_char_boundary(end) {
+        end -= 1;
+    }
+    joined.push_str(piece.get(..end).unwrap_or_default());
+    *dropped = true;
+}
+
+/// `text` without one pair of surrounding quotes (`"…"` or `'…'`).
+fn unquote(text: &str) -> &str {
+    for q in ['"', '\''] {
+        if let Some(inner) = text.strip_prefix(q).and_then(|t| t.strip_suffix(q)) {
+            return inner;
+        }
+    }
+    text
 }
 
 /// Whether `name` matches `pattern`, where `*` is any run of characters and `?` one character.
