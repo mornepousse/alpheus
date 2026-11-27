@@ -16,6 +16,7 @@
 use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::popup::Anchor;
 use crate::session_bus::ItemKey;
+use crate::text::clean;
 use std::time::{Duration, Instant};
 
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
@@ -112,11 +113,13 @@ pub fn tooltip_columns(bar_columns: u16, extra_width: u32, advance: f32) -> u16 
     bar_columns.saturating_sub(frame.min(u32::from(u16::MAX)) as u16)
 }
 
-/// The tooltip's one row: the text, truncated with "…" to `max_columns` − 2 (the room `tooltip_columns`
-/// leaves less the pad cell `list::padded` adds on each side). The frame around it is the painter's, as
-/// for every boxed surface.
+/// The tooltip's one row: the text made drawable (`text::clean`: controls and bidirectional
+/// formatting gone, at most `MAX_TEXT` characters — a window title or a device name comes whole
+/// and uncapped from `tooltips.rs`), truncated with "…" to `max_columns` − 2 (the room
+/// `tooltip_columns` leaves less the pad cell `list::padded` adds on each side). The frame around
+/// it is the painter's, as for every boxed surface.
 pub fn tooltip_row(text: &str, max_columns: u16) -> Grid {
-    let text = truncate(text, max_columns.saturating_sub(2));
+    let text = truncate(&clean(text), max_columns.saturating_sub(2));
     let columns = text_width(&text);
     let mut g = Grid::empty(columns);
     g.write(0, columns, &text, Style::NORMAL);
@@ -222,6 +225,19 @@ mod tests {
         assert_eq!(h.target(), Some((&key(1), &Anchor { output: "HDMI-A-1".into(), start: 1, end: 2 })));
         h.cancel();
         assert_eq!(h.target(), None, "cancelled: nothing tracked any more");
+    }
+
+    /// A window title or a Bluetooth name is drawn whole by its tooltip, and the pure text
+    /// functions do not cap it: the row cleans it (controls, bidirectional overrides) and cuts it.
+    #[test]
+    fn a_hostile_title_is_drawn_clean_and_capped() {
+        let hostile = format!("\u{1b}[31mEvil\n\u{202e}eltit\u{7}\u{200b}{}", "x".repeat(10_000));
+        let row = super::tooltip_row(&hostile, u16::MAX);
+        let text = row.text();
+        assert!(!text.chars().any(|c| c.is_control() || crate::text::invisible(c)), "drawn clean: {:?}", &text[..40]);
+        assert!(text.starts_with("[31mEvil eltit"), "the line kept, its controls gone: {:?}", &text[..40]);
+        assert!(text.chars().count() <= crate::text::MAX_TEXT, "capped whatever the room: {}", text.chars().count());
+        assert!(super::tooltip_row(&hostile, 30).width() <= 28, "and cut to the room");
     }
 
     #[test]

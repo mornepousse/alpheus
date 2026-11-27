@@ -1649,7 +1649,10 @@ impl App {
         if app.popup.is_some() || app.launcher_is_open() || app.notes_is_open() {
             return;
         }
-        let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };
+        // Clean and capped before it is kept: the row draws it so, and the body holds no more.
+        let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(crate::text::clean) else {
+            return;
+        };
         // By `hover_surface`'s IDENTITY, never by
         // re-deriving the bar from `anchor.output`: up to ½ s has passed since `hover_moved` armed
         // this, time enough for `update_output` to rename it, or for the name to be briefly shared.
