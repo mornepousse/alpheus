@@ -21,8 +21,8 @@
 //! reaches it through the environment, never the arguments", "Each hook has a token bucket",
 //! "A source that is down is not a state").
 
-use crate::config::{HooksConfig, ModuleId};
-use crate::modules::Needs;
+use crate::config::{HooksConfig, ModuleId, OsdConfig};
+use crate::modules::{Needs, needs_of};
 use crate::privacy::Capture;
 use crate::state::{Failed, Msg};
 use crate::system::{Battery, BtState, Charge, Link, NetState, PowerState, Profile, ProfileState};
@@ -99,12 +99,13 @@ impl HookId {
         }
     }
 
-    /// Whether the configured `modules` (or `[shield]`) read what this event comes from. A hook
-    /// never adds a source: an event nothing reads never fires. See docs/decisions.md, "A hook
-    /// never adds a source".
-    pub fn reads(self, modules: &[ModuleId], shield_configured: bool) -> bool {
-        // A closure that captures `modules`: `Needs::of` works out what the modules read.
-        let needs = || Needs::of(modules);
+    /// Whether the configured `modules`, the OSD's kinds (`osd`) or `[shield]` read what this event
+    /// comes from. A hook never adds a source: an event nothing reads never fires. See
+    /// docs/decisions.md, "A hook never adds a source".
+    pub fn reads(self, modules: &[ModuleId], osd: &OsdConfig, shield_configured: bool) -> bool {
+        // A closure that captures `modules` and `osd`: `needs_of` works out what the modules and the
+        // OSD's kinds read.
+        let needs = || needs_of(modules, osd);
         match self {
             HookId::Started | HookId::ThemeMode => true,
             HookId::Dnd => modules.contains(&ModuleId::Notifications),

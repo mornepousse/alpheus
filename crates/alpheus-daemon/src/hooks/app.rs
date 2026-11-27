@@ -18,7 +18,7 @@
 //! docs/decisions.md ("A hook runs in its own systemd scope", "A hook's data reaches it through the
 //! environment, never the arguments").
 
-use crate::config::ModuleId;
+use crate::config::{ModuleId, OsdConfig};
 use crate::hooks::{Event, Fire, HookId, Hooks, Verdict};
 use crate::launcher::run::{SYSTEMD_RUN, Spawner, spawner};
 use crate::launcher::scan::has_program;
@@ -125,12 +125,12 @@ pub(crate) fn hook_spawn(exec: &dyn Executor, spawner: Spawner, path_dirs: &[Pat
     }
 }
 
-/// The start-up lines: how many hooks are set, then each one the configured `modules` never feed
-/// (a hook never adds a source: see docs/decisions.md, "A hook never adds a source").
-pub(crate) fn start_lines(model: &Hooks, modules: &[ModuleId], shield_configured: bool) -> Vec<String> {
+/// The start-up lines: how many hooks are set, then each one the configured `modules` and OSD kinds
+/// never feed (a hook never adds a source: see docs/decisions.md, "A hook never adds a source").
+pub(crate) fn start_lines(model: &Hooks, modules: &[ModuleId], osd: &OsdConfig, shield_configured: bool) -> Vec<String> {
     let mut lines = vec![format!("hooks: {} set", model.set())];
     for id in HookId::ALL {
-        if model.wants(id) && !id.reads(modules, shield_configured) {
+        if model.wants(id) && !id.reads(modules, osd, shield_configured) {
             lines.push(format!("hooks: {} never fires (needs {})", id.key(), id.needs()));
         }
     }
@@ -171,7 +171,7 @@ impl App {
     /// The daemon started its sources: the start-up lines, then the `started` hook.
     pub(crate) fn hooks_started(&mut self) {
         let Some(h) = self.hooks.as_ref() else { return };
-        for line in start_lines(&h.model, &self.bar.config.modules, self.shield.is_some()) {
+        for line in start_lines(&h.model, &self.bar.config.modules, &self.bar.config.osd, self.shield.is_some()) {
             log(&line);
         }
         self.hooks_event(Event::Started);

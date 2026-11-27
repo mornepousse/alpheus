@@ -288,12 +288,13 @@ Date: 2026-11-15 · Source: tests `the_bucket_gives_five_then_one_every_three_se
 
 ### A hook never adds a source
 
-Events come from what the configured modules already read. An event whose module is not in
-`modules` never fires, and the daemon says so once at start (`hooks: <event> never fires (needs
-<modules>)`). A hook on `bluetooth` with no Bluetooth module would otherwise make the daemon read
-BlueZ: a cost hidden behind a hook.
+Events come from what the configured modules already read, an OSD kind's source included (the
+`bluetooth` kind starts BlueZ, so a `bluetooth` hook fires with it). An event nothing reads never
+fires, and the daemon says so once at start (`hooks: <event> never fires (needs <modules>)`). A hook
+on `bluetooth` with no Bluetooth module would otherwise make the daemon read BlueZ: a cost hidden
+behind a hook.
 
-Date: 2026-11-15 · Source: tests `an_event_is_read_only_when_its_modules_are_in_modules` and `the_start_lines_name_each_hook_that_never_fires`; headless `hooks_say_what_never_fires`
+Date: 2026-11-15 · Source: tests `an_event_is_read_only_when_its_modules_are_in_modules`, `the_start_lines_name_each_hook_that_never_fires` and `the_start_lines_count_the_source_an_osd_kind_starts`; headless `hooks_say_what_never_fires`
 
 ### A hook runs in its own systemd scope
 
