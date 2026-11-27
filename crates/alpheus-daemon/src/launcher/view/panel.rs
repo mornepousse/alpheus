@@ -1,4 +1,4 @@
-//! The Super+X command panel drawn: the search field, the tab strip, a line, the list (the open
+//! The Super+X command panel drawn: the search field, a blank row, the tab strip, a line, the list (the open
 //! tab's section labels and tools on two lines, or the search's results under their category's
 //! label, fixed choices as chips) beside the selected tool's detail card, a line, the footer. Every
 //! number is in the ring's coordinates, as in the rest of the view.
@@ -15,12 +15,12 @@ use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions
 use crate::list::{self, Boxed, Shape, ShapeKind, wrap};
 use std::borrow::Cow;
 
-/// The rows around the panes: the ring's two, the search field, the tabs, the line under them,
-/// the line over the footer, the footer.
-pub(super) const CHROME_ROWS: u16 = 7;
+/// The rows around the panes: the ring's two, the search field, a blank row (the P1 render's gap),
+/// the tabs, the line under them, the line over the footer, the footer.
+pub(super) const CHROME_ROWS: u16 = 8;
 /// The panes' lines the box asks for: the planned 30-row box less its chrome, room for six
 /// two-line tools even when each sits under its own section label (18 lines, the worst case).
-pub(super) const PANE_ROWS: u16 = 23;
+pub(super) const PANE_ROWS: u16 = 22;
 /// The narrowest list and card side by side: below, the list takes the box alone.
 const SPLIT_COLUMNS: u16 = 80;
 /// The widest a tab's name is drawn.
@@ -62,7 +62,7 @@ fn geometry(b: &BoxLayout) -> Geometry {
     } else {
         ((start, end), None)
     };
-    Geometry { tabs: 2, pane_top: 4, pane_rows: pane_lines(b), list, card }
+    Geometry { tabs: 3, pane_top: 5, pane_rows: pane_lines(b), list, card }
 }
 
 /// Whether `l` shows the panel: the Tools mode at an opened panel's root, its home or its search.
@@ -212,7 +212,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             }
         }
     }
-    let mut boxed = list::boxed(&grid, &[3, rows.saturating_sub(3)], None);
+    let mut boxed = list::boxed(&grid, &[g.tabs + 1, rows.saturating_sub(3)], None);
     boxed.shapes = shapes;
     boxed
 }

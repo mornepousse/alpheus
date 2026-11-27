@@ -3,6 +3,7 @@ source: crates/alpheus-daemon/src/launcher/view/tests.rs
 expression: snapshot_with_shapes(&rows)
 ---
   󰍉 sh▏                                                                                     Super   X   
+                                                                                                        
   All   Quick settings   Control center   Utilities   Captures   Diagnostics   System   Session         
                                                                                                         
   ● QUICK SETTINGS                                                                                      
@@ -28,10 +29,10 @@ expression: snapshot_with_shapes(&rows)
       Screenshot                                                                                        
       Copy a screenshot of this screen                                                                  
                                                                                                         
-                                                                                                        
   ⏎  Run    ←   →  Choose    Esc  Close                                                                 
 
 ..m...a.....................................................................................mmmmm...m...
+........................................................................................................
 ..???...................................................................................................
 ........................................................................................................
 ..B.mmmmmmmmmmmmmm......................................................................................
@@ -57,45 +58,44 @@ expression: snapshot_with_shapes(&rows)
 ......a......a..........................................................................................
 ......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm..................................................................
 ........................................................................................................
-........................................................................................................
 ..m..mmm....m...m..mmmmmm....mmm..mmmmm.................................................................
 
 divider: none
-separators: [2, 26]
+separators: [3, 26]
 
 shapes:
 Chip(Pill) at row 0 col 1 width 102 rows 1
 Chip(Selection) at row 0 col 99 width 3 rows 1
 Chip(Selection) at row 0 col 91 width 7 rows 1
-Chip(AccentContainer) at row 1 col 1 width 5 rows 1
-Chip(Pill) at row 1 col 7 width 16 rows 1
-Chip(Pill) at row 1 col 24 width 16 rows 1
-Chip(Pill) at row 1 col 41 width 11 rows 1
-Chip(Pill) at row 1 col 53 width 10 rows 1
-Chip(Pill) at row 1 col 64 width 13 rows 1
-Chip(Pill) at row 1 col 78 width 8 rows 1
-Chip(Pill) at row 1 col 87 width 9 rows 1
-Tile at row 4 col 2 width 3 rows 2 glyph '\u{f0498}' in Hue(Blue)
-Tile at row 6 col 2 width 3 rows 2 glyph '\u{f00af}' in Hue(Blue)
-Tile at row 8 col 2 width 3 rows 2 glyph '\u{f0594}' in Hue(Blue)
-Band at row 11 col 1 width 61 rows 2
-Tile at row 11 col 2 width 3 rows 2 glyph '\u{f0902}' in Hue(Yellow)
-Chip(AccentContainer) at row 12 col 6 width 8 rows 1
-Chip(Pill) at row 12 col 15 width 5 rows 1
-Chip(Pill) at row 12 col 21 width 8 rows 1
-Chip(Pill) at row 12 col 30 width 5 rows 1
-Chip(Pill) at row 12 col 36 width 5 rows 1
-Tile at row 14 col 2 width 3 rows 2 glyph '\u{f0437}' in Hue(Green)
-Chip(Pill) at row 15 col 6 width 29 rows 1
-Tile at row 16 col 2 width 3 rows 2 glyph '\u{f0709}' in Hue(Green)
-Tile at row 18 col 2 width 3 rows 2 glyph '\u{f0219}' in Hue(Green)
-Tile at row 20 col 2 width 3 rows 2 glyph '\u{f0219}' in Hue(Green)
-Tile at row 23 col 2 width 3 rows 2 glyph '\u{f0e51}' in Hue(Orange)
-Card at row 3 col 63 width 40 rows 23
-Tile at row 4 col 65 width 3 rows 2 glyph '\u{f0902}' in Hue(Yellow)
-Chip(Selection) at row 10 col 98 width 3 rows 1
-Chip(Selection) at row 10 col 94 width 3 rows 1
+Chip(AccentContainer) at row 2 col 1 width 5 rows 1
+Chip(Pill) at row 2 col 7 width 16 rows 1
+Chip(Pill) at row 2 col 24 width 16 rows 1
+Chip(Pill) at row 2 col 41 width 11 rows 1
+Chip(Pill) at row 2 col 53 width 10 rows 1
+Chip(Pill) at row 2 col 64 width 13 rows 1
+Chip(Pill) at row 2 col 78 width 8 rows 1
+Chip(Pill) at row 2 col 87 width 9 rows 1
+Tile at row 5 col 2 width 3 rows 2 glyph '\u{f0498}' in Hue(Blue)
+Tile at row 7 col 2 width 3 rows 2 glyph '\u{f00af}' in Hue(Blue)
+Tile at row 9 col 2 width 3 rows 2 glyph '\u{f0594}' in Hue(Blue)
+Band at row 12 col 1 width 61 rows 2
+Tile at row 12 col 2 width 3 rows 2 glyph '\u{f0902}' in Hue(Yellow)
+Chip(AccentContainer) at row 13 col 6 width 8 rows 1
+Chip(Pill) at row 13 col 15 width 5 rows 1
+Chip(Pill) at row 13 col 21 width 8 rows 1
+Chip(Pill) at row 13 col 30 width 5 rows 1
+Chip(Pill) at row 13 col 36 width 5 rows 1
+Tile at row 15 col 2 width 3 rows 2 glyph '\u{f0437}' in Hue(Green)
+Chip(Pill) at row 16 col 6 width 29 rows 1
+Tile at row 17 col 2 width 3 rows 2 glyph '\u{f0709}' in Hue(Green)
+Tile at row 19 col 2 width 3 rows 2 glyph '\u{f0219}' in Hue(Green)
+Tile at row 21 col 2 width 3 rows 2 glyph '\u{f0219}' in Hue(Green)
+Tile at row 24 col 2 width 3 rows 2 glyph '\u{f0e51}' in Hue(Orange)
+Card at row 4 col 63 width 40 rows 22
+Tile at row 5 col 65 width 3 rows 2 glyph '\u{f0902}' in Hue(Yellow)
 Chip(Selection) at row 11 col 98 width 3 rows 1
+Chip(Selection) at row 11 col 94 width 3 rows 1
+Chip(Selection) at row 12 col 98 width 3 rows 1
 Chip(Pill) at row 27 col 1 width 3 rows 1
 Chip(Pill) at row 27 col 11 width 3 rows 1
 Chip(Pill) at row 27 col 15 width 3 rows 1

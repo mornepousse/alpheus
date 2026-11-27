@@ -1336,8 +1336,9 @@ fn panel_home_snapshot() {
     let rows = draw_in(&l, &b);
     let text = tool_text(&rows);
     assert!(text[0].contains("Search tools"), "the search field first: {text:#?}");
-    assert!(text[1].contains(" All ") && text[1].contains(" Captures "), "the tabs: {text:#?}");
-    assert!(text[3].contains("● QUICK SETTINGS"), "no root tool: the first category's label first: {text:#?}");
+    assert!(text[1].trim().is_empty(), "a blank row under it: {text:#?}");
+    assert!(text[2].contains(" All ") && text[2].contains(" Captures "), "the tabs: {text:#?}");
+    assert!(text[4].contains("● QUICK SETTINGS"), "no root tool: the first category's label first: {text:#?}");
     insta::assert_snapshot!("panel_home", snapshot_with_shapes(&rows));
 }
 
@@ -1530,11 +1531,11 @@ fn many_categories() -> String {
 fn the_active_tab_stays_visible() {
     let (mut l, b) = panel_box(&many_categories());
     let rows = draw_in(&l, &b);
-    let strip = rows.rows[1].text();
+    let strip = rows.rows[2].text();
     assert!(strip.trim_end().ends_with('›') && !strip.contains('‹'), "cut at the right only: {strip:?}");
     l.key(Key::BackTab);
     let rows = draw_in(&l, &b);
-    let strip = rows.rows[1].text();
+    let strip = rows.rows[2].text();
     assert!(strip.contains(" Category 15 "), "the last tab is drawn: {strip:?}");
     assert!(strip.trim_start().starts_with('‹') && !strip.contains('›'), "cut at the left: {strip:?}");
     let active = rows.shapes.iter().find(|s| s.kind == ShapeKind::Chip(Tint::AccentContainer)).expect("the active pill");
@@ -1809,15 +1810,15 @@ fn a_click_on_a_tab_maps_to_it() {
     let captures = l.tools().unwrap().catalog.categories.iter().position(|c| c.name == "Captures").unwrap();
     let tab = l.tools().unwrap().panel().unwrap().tabs.iter().position(|t| *t == Tab::Category(captures)).unwrap();
     let ring = |v: usize| u16::try_from(v + 1).unwrap();
-    assert_eq!(y, 1, "the strip's row");
+    assert_eq!(y, 2, "the strip's row");
     assert_eq!(hit(&l, &b, ring(x + 1), ring(y)), Some(Click::Tab(tab)));
     assert_eq!(hit(&l, &b, ring(x), ring(y)), Some(Click::Tab(tab)), "the pill's own edge");
     assert_eq!(hit(&l, &b, ring(x - 1), ring(y)), Some(Click::Inside), "the gap before it");
     // A scrolled strip: the last tab drawn is the last tab.
     let (mut l, b) = panel_box(&many_categories());
     l.key(Key::BackTab);
-    let strip = draw_in(&l, &b).rows[1].text();
-    let (y, x) = (1, strip[..strip.find(" Category 15 ").unwrap()].chars().count());
+    let strip = draw_in(&l, &b).rows[2].text();
+    let (y, x) = (2, strip[..strip.find(" Category 15 ").unwrap()].chars().count());
     let last = l.tools().unwrap().panel().unwrap().tabs.len() - 1;
     assert_eq!(hit(&l, &b, ring(x + 2), ring(y)), Some(Click::Tab(last)));
 }
@@ -1915,8 +1916,8 @@ fn the_tools_layout_takes_the_panel_s_size_capped_at_90_and_80_percent() {
     let b = tools_layout(232, 49, (105, 20));
     assert_eq!(
         b,
-        BoxLayout { columns: 107, rows: 27, list_top: 2, list_rows: 23, preview_columns: 0 },
-        "the list and the ring across; the chip, the tabs, a line, the panes, a line and the footer down"
+        BoxLayout { columns: 107, rows: 28, list_top: 2, list_rows: 24, preview_columns: 0 },
+        "the list and the ring across; the chip, a blank row, the tabs, a line, the panes, a line and the footer down"
     );
     let capped = tools_layout(80, 30, (200, 100));
     assert_eq!((capped.columns, capped.rows), (72, 24), "90 % of the columns, 80 % of the rows");
@@ -1928,7 +1929,7 @@ fn the_panel_box_fits_a_small_output() {
     let room = panel_room(80, 30);
     let b = tools_layout(80, 30, room);
     assert!(b.columns <= 72 && b.rows <= 24, "at most 90 % × 80 % of the output: {b:?}");
-    assert_eq!((b.columns, b.rows), (room.0 + 2, room.1 + 7), "the room fits the box: no cut");
+    assert_eq!((b.columns, b.rows), (room.0 + 2, room.1 + 8), "the room fits the box: no cut");
 }
 
 #[test]
@@ -2072,12 +2073,25 @@ fn a_section_label_never_sits_alone_at_the_bottom() {
     }
 }
 
+/// A blank row sets the search field apart from the tab strip under it (the P1 render's gap): no
+/// shape and no text between them.
+#[test]
+fn a_blank_row_lies_between_the_search_field_and_the_tabs() {
+    let (l, b) = panel_box(PINNED);
+    let rows = draw_in(&l, &b);
+    let field = rows.shapes.iter().find(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Pill)).expect("the search field");
+    let all = rows.shapes.iter().find(|s| s.kind == ShapeKind::Chip(Tint::AccentContainer)).expect("the open tab");
+    assert_eq!(all.row, field.row + 2, "{}", snapshot_with_shapes(&rows));
+    assert!(rows.rows[1].text().trim().is_empty(), "{:?}", rows.rows[1].text());
+    assert!(rows.shapes.iter().all(|s| s.row != 1), "{}", snapshot_with_shapes(&rows));
+}
+
 /// A cut strip that starts at the first tab draws it flush, with no room kept for a `‹`.
 #[test]
 fn a_cut_strip_starts_flush_at_the_first_tab() {
     let (l, b) = panel_box(&many_categories());
     let rows = draw_in(&l, &b);
-    let pills: Vec<&Shape> = rows.shapes.iter().filter(|s| s.row == 1 && matches!(s.kind, ShapeKind::Chip(_))).collect();
+    let pills: Vec<&Shape> = rows.shapes.iter().filter(|s| s.row == 2 && matches!(s.kind, ShapeKind::Chip(_))).collect();
     let first = pills.iter().map(|s| s.col).min().unwrap();
     let field = rows.shapes.iter().find(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Pill)).expect("the search field");
     assert_eq!(first, field.col, "flush with the search field: {}", snapshot_with_shapes(&rows));
