@@ -342,7 +342,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 44, "the table's 46, less the two Record rows hidden while recording");
+    assert_eq!(ids_shown(&all()).len(), 45, "the table's 47, less the two Record rows hidden while recording");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -382,11 +382,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 44);
+    assert_eq!(builtin_ids(&cat).len(), 45);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 42);
+    assert_eq!(ids.len(), 43);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");

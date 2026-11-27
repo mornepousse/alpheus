@@ -330,7 +330,7 @@ twice in Mod+Space's search: drop the source once the menu is yours).
 
 In `crates/alpheus-daemon/src/launcher/tools/`:
 
-- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 46
+- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 47
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
   entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `panel.rs`: pure. The command panel's model: its tabs (`Tab`), the rows of the open tab (All's
