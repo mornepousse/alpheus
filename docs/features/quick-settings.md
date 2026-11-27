@@ -42,7 +42,9 @@ A row whose tool, hardware or command is missing is not shown.
   not count: when every radio is, the row shows `hard blocked` and Space does nothing. GPS, NFC and
   other radio types are left alone. Hidden without a radio of the three types, and nothing is read
   with `airplane = false`. The log is a fixed word: `quick: airplane on`, `quick: airplane off`.
-  **Not yet verified:** that `rfkill` writes `/dev/rfkill` unprivileged through the uaccess ACL.
+  Unprivileged write is granted by the uaccess ACL: on the owner's NixOS machine `/dev/rfkill` is
+  `crw-rw-r--+` with `user:<the logged-in user>:rw-`. **Not yet verified:** `rfkill` itself has not
+  been run by any test (the tests use a recorder); the first real switch is the trial's.
 - **Microphone.** `Microphone`, muted or live. Hidden without a default source.
 - **Mixer.** `Mixer…` opens a terminal mixer (`[quick] mixer`).
 - **Do not disturb.** Space toggles it. Enter or → opens a detail with six choices (`Off`,
@@ -456,10 +458,17 @@ Figures are those recorded when each part merged, in release, back to back with 
   anonymous memory while the panel is open, none kept once closed (`quick_pss_with_the_radio_rows`).
   Closed, or with `airplane = false`, it holds nothing: no fd, thread, timer or `/dev/rfkill`; about
   a dozen small sysfs reads per open, one more read 300 ms after a radio command.
+- **Both radio rows, against main** (re-measured with the headless proof, pc-simu, 3 runs): shown,
+  the open panel costs +28…+34 KB PSS more over rest than without them (+0…+8 KB anonymous), and
+  once closed it is within noise (`quick_pss_with_the_radio_rows`). Whether or not they show, the first
+  open keeps +58…+72 KB more than main's (`quick_pss_idle_open_and_closed`): it is the binary's code
+  pages, 64 KB more of them touched by the first open (smaps, in `docs/measurements.md`),
+  paid once and never growing.
 - **The acting Bluetooth connection:** +54…+116 KB while the detail is open
   (`bluetooth_acting_connection_cost`), the headset row +12…+20 KB (`bluetooth_headset_row_cost`).
 - **Wake-ups:** none at rest after the panel closes, for the loop and for the D-Bus thread
   (`at_rest_no_wakeups_after_the_quick_panel`, `at_rest_no_wakeups_after_the_wifi_detail`,
+  `at_rest_no_wakeups_after_the_radio_rows` for the whole daemon after both rows' keys,
   `at_rest_no_wakeups_after_the_vpn_detail`, `bluetooth_at_rest_no_wakeups_after_the_detail`). A
   one-second timer left armed by a close was shown to turn the quick panel's, the Wi-Fi detail's and
   the VPN detail's tests red.
