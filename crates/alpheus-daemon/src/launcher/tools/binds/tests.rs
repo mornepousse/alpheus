@@ -171,6 +171,19 @@ fn env_variables_are_bounded() {
 }
 
 #[test]
+fn control_characters_never_reach_the_screen() {
+    let text = "# ── G\u{1b}[31mx\u{1b}]0;t\u{7} ──\nbind=SUPER,a\u{7},spawn,foo\u{1b}[2J\tbar # do\u{202e}it\u{8}\n";
+    let b = mango(text);
+    let bind = &b.binds[0];
+    for s in [bind.combo.as_str(), bind.description.as_str(), bind.command.as_str(), b.groups[0].as_str()] {
+        assert!(!s.chars().any(|c| c.is_control() || alpheus_common::text::invisible(c)), "{s:?}");
+    }
+    assert_eq!(bind.command, "spawn,foo bar");
+    assert_eq!(bind.description, "doit");
+    assert_eq!(b.groups, ["Gx"]);
+}
+
+#[test]
 fn combos_print_in_title_case() {
     let m = Dialect::Mango;
     assert_eq!(describe::combo(m, "SUPER+SHIFT", "a"), "Super+Shift+A");

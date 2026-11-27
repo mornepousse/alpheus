@@ -232,14 +232,14 @@ impl Parse {
     /// A new file starts in the default group, with no comment above.
     fn start_file(&mut self, name: String) {
         self.file = self.out.files.len();
-        self.out.files.push(name);
+        self.out.files.push(clean(&name));
         self.open_group(self.default_group().to_string());
         self.above = None;
     }
 
     /// Makes `name` the group of the next binds; it exists once a bind lands in it.
     pub(crate) fn open_group(&mut self, name: String) {
-        self.group_name = name;
+        self.group_name = clean(&name);
         self.group = None;
     }
 
@@ -282,7 +282,13 @@ impl Parse {
                 g
             }
         };
-        self.out.binds.push(Bind { combo, description, command, group, file: self.file });
+        self.out.binds.push(Bind {
+            combo: clean(&combo),
+            description: clean(&description),
+            command: clean(&command),
+            group,
+            file: self.file,
+        });
     }
 
     /// Defines `name` as `value` (a later definition replaces an earlier one); a name or value past
@@ -340,6 +346,12 @@ impl Parse {
         }
         out
     }
+}
+
+/// Text from a config file made safe to draw: control characters, escape sequences and
+/// bidirectional overrides dropped (the file is the user's, but a pasted line can hold them).
+fn clean(text: &str) -> String {
+    alpheus_common::text::clean_line(text, MAX_LINE)
 }
 
 /// `path` with its `.` components dropped and each `..` taking off the component before, so the
