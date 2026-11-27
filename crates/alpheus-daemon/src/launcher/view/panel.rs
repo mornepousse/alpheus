@@ -9,7 +9,7 @@ use super::{BoxLayout, Click, Hint, LETTER_CELLS, TOOLS_INSET, blank, capsule, c
 use crate::grid::{Grid, Style, Tint, text_width, truncate};
 use crate::launcher::matching::Source;
 use crate::launcher::model::Launcher;
-use crate::launcher::tools::catalog::{Choices, Entry, EntryKind};
+use crate::launcher::tools::catalog::{Choices, Entry, EntryKind, FOLDER};
 use crate::launcher::tools::nav::{Level, RowId, ToolsState};
 use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions, window};
 use crate::list::{self, Boxed, Shape, ShapeKind, wrap};
@@ -303,11 +303,11 @@ struct ToolLine {
     y: usize,
 }
 
-/// A tool on rows `y` and `y + 1`: its tile with the glyph in its category's hue, its name (or its
-/// pending question; in the search the matched characters in the accent), its description dim
-/// below, or in the search its fixed choices as chips, the picked one filled; at the right of the
-/// first line its switch (the slot kept from the first frame for a tool with a state), `›` when it
-/// opens a level, its letter.
+/// A tool on rows `y` and `y + 1`: its tile (`push_tile`), its name (or its pending question; in
+/// the search the matched characters in the accent), its description dim below, or in the search
+/// its fixed choices as chips, the picked one filled; at the right of the first line its switch
+/// (the slot kept from the first frame for a tool with a state), `›` when it opens a level, its
+/// letter.
 fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid: &mut [Grid], shapes: &mut Vec<Shape>) {
     let &ToolLine { e, k, selected, search, y } = row;
     let Some(entry) = t.catalog.entries.get(e) else { return };
@@ -316,10 +316,7 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
         shapes.push(ring_shape(y, list.0, list.1.saturating_sub(list.0), 2, ShapeKind::Band));
     }
     let tile = list.0 + 1;
-    shapes.push(ring_shape(y, tile, 3, 2, ShapeKind::Chip(Tint::Pill)));
-    if let Some(icon) = entry.icon {
-        grid[y].write(tile + 1, tile + 2, &icon.to_string(), category_hue(t, entry.category));
-    }
+    push_tile(t, entry, y, tile, shapes);
     // From the right: the letter's capsule (its cells kept whether it shows), the switch, `›`.
     let mut right = list.1.saturating_sub(1 + LETTER_CELLS);
     let letter = entry.letter.filter(|_| l.letters_live());
@@ -359,6 +356,16 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
     if let Some(text) = second {
         grid[y + 1].write(x, stop, &truncate(text, room), Style::MUTED);
     }
+}
+
+/// A tool's 3 × 2 tile on rows `y` and `y + 1` from column `x`, its cells left blank: its glyph (its
+/// own, else its category's, else the generic folder) in its category's hue, which the painter
+/// centres in the shape (a cell cannot hold a glyph between two rows, nor a wide one in one cell).
+fn push_tile(t: &ToolsState, entry: &Entry, y: usize, x: u16, shapes: &mut Vec<Shape>) {
+    let category = entry.category.and_then(|c| t.catalog.categories.get(c));
+    let glyph = entry.icon.or(category.map(|c| c.icon)).unwrap_or(FOLDER);
+    let ink = category_hue(t, entry.category).fg;
+    shapes.push(Shape { glyph: Some((glyph, ink)), ..ring_shape(y, x, 3, 2, ShapeKind::Chip(Tint::Pill)) });
 }
 
 /// The columns a row's chips take in the list pane `list`: from past its tile to before its switch
@@ -468,10 +475,7 @@ fn detail_card(
     let bottom = (top + rows).saturating_sub(1);
     let mut y = top + 1;
     if y + 2 <= bottom {
-        shapes.push(ring_shape(y, x, 3, 2, ShapeKind::Chip(Tint::Pill)));
-        if let Some(icon) = entry.icon {
-            grid[y].write(x + 1, x + 2, &icon.to_string(), category_hue(t, entry.category));
-        }
+        push_tile(t, entry, y, x, shapes);
         y += 3;
     }
     // A line of the card at `y`, when it fits: `y` then moves past it.

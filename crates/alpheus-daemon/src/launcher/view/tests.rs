@@ -1233,8 +1233,14 @@ fn draw_in(l: &Launcher, b: &BoxLayout) -> Boxed {
 
 /// The snapshot, the separators, then the shapes one per line.
 fn snapshot_with_shapes(b: &Boxed) -> String {
-    let shapes: Vec<String> =
-        b.shapes.iter().map(|s| format!("{:?} at row {} col {} width {} rows {}", s.kind, s.row, s.col, s.width, s.rows)).collect();
+    let shapes: Vec<String> = b
+        .shapes
+        .iter()
+        .map(|s| {
+            let glyph = s.glyph.map_or_else(String::new, |(c, ink)| format!(" glyph {c:?} in {ink:?}"));
+            format!("{:?} at row {} col {} width {} rows {}{glyph}", s.kind, s.row, s.col, s.width, s.rows)
+        })
+        .collect();
     format!("{}\nseparators: {:?}\n\nshapes:\n{}", snapshot(b), b.separators, shapes.join("\n"))
 }
 
@@ -1276,6 +1282,35 @@ fn select_tool(l: &mut Launcher, name: &str) {
     while l.selected != at {
         l.key(if l.selected < at { Key::Down } else { Key::Up });
     }
+}
+
+/// The glyphs the tiles of `b` carry (the list's, then the card's), and whether every tile's cells
+/// are blank: the painter draws the glyph, centred in the shape.
+fn tile_glyphs(b: &Boxed) -> (Vec<Option<char>>, bool) {
+    let tiles = tiles(b);
+    let blank =
+        tiles.iter().all(|t| b.rows[t.row..t.row + 2].iter().all(|r| r.text().chars().skip(usize::from(t.col)).take(3).all(|c| c == ' ')));
+    (tiles.iter().map(|t| t.glyph.map(|(c, _)| c)).collect(), blank)
+}
+
+#[test]
+fn a_user_entry_without_icon_shows_its_category_s_icon() {
+    let cfg = "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Nix\"\nicon = \"N\"\n[[tools.entry]]\nname = \"Rebuild\"\ncategory = \"Nix\"\nrun = [\"x\"]\n";
+    let (l, b) = panel_box(cfg);
+    let rows = draw_in(&l, &b);
+    let (glyphs, blank) = tile_glyphs(&rows);
+    assert_eq!(glyphs, [Some('N'), Some('N')], "the list's tile and the card's: {}", snapshot_with_shapes(&rows));
+    assert!(blank, "the tiles' cells stay blank: {}", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn a_user_entry_without_icon_or_category_shows_the_generic_glyph() {
+    use crate::launcher::tools::catalog::FOLDER;
+    let (l, b) = panel_box("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Rebuild\"\nrun = [\"x\"]\n");
+    let rows = draw_in(&l, &b);
+    let (glyphs, blank) = tile_glyphs(&rows);
+    assert_eq!(glyphs, [Some(FOLDER), Some(FOLDER)], "the list's tile and the card's: {}", snapshot_with_shapes(&rows));
+    assert!(blank, "the tiles' cells stay blank: {}", snapshot_with_shapes(&rows));
 }
 
 #[test]
