@@ -7,9 +7,10 @@
 //! session, its environment cleared: a temporary HOME and XDG directories (no config, no daemon
 //! socket), no compositor variable, no D-Bus bus, and a PATH holding only this test's fake tools.
 //! Each fake prints an anonymised fixture of `alpheus-common/tests/fixtures` for the reads the tabs
-//! make and fails anything else, so no real session tool ever runs and nothing is changed. The one
-//! thing of the machine the binary still touches is the Diag tab's journal check, which only tries
-//! to open `/var/log/journal/*/system.journal` and reads nothing from it.
+//! make and fails anything else (the test asserts no call fell through, so a changed argv cannot
+//! measure error screens), so no real session tool ever runs and nothing is changed. The Diag tab's
+//! journal check still tries to open `/var/log/journal/*/system.journal` and reads nothing from it;
+//! no other session state, tool or bus is touched.
 //!
 //! **Release only**, like the daemon's memory suite: the control center ships in release, and a
 //! debug build inflates PSS. `require_release` panics with the command if it's missing:
@@ -96,10 +97,12 @@ fn quoted(text: &str) -> String {
 
 /// A fake `name` in `bin`: it appends `name` to `<bin>/calls` (which tabs were really visited),
 /// then for each (shell pattern over its arguments, output) prints the output with the shell's own
-/// `printf` (no other program, so PATH needs nothing else), and fails any other call: a write such
-/// as `wpctl set-volume` never succeeds, and never reaches the real tool.
+/// `printf` (no other program, so PATH needs nothing else), and fails any other call, appending it
+/// to `<bin>/unexpected`: a write such as `wpctl set-volume` never succeeds, never reaches the real
+/// tool, and a read whose argv changed is caught instead of measuring an error screen.
 fn fake(bin: &Path, name: &str, answers: &[(&str, String)]) {
     let calls = quoted(&bin.join("calls").display().to_string());
+    let unexpected = quoted(&bin.join("unexpected").display().to_string());
     let mut script = format!(
         "#!/bin/sh\n# Fake {name} of the control center's memory test: prints a fixture, changes nothing.\n\
          printf '%s\\n' {name} >> {calls}\ncase \"$*\" in\n"
@@ -107,7 +110,7 @@ fn fake(bin: &Path, name: &str, answers: &[(&str, String)]) {
     for (pattern, out) in answers {
         script.push_str(&format!("  {pattern}) printf '%s' {} ;;\n", quoted(out)));
     }
-    script.push_str("  *) exit 1 ;;\nesac\n");
+    script.push_str(&format!("  *) printf '%s\\n' \"{name} $*\" >> {unexpected}; exit 1 ;;\nesac\n"));
     let path = bin.join(name);
     fs::write(&path, script).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -343,6 +346,9 @@ fn the_control_center_stays_light_through_every_tab() {
     let peak = tui.peak_rss_kb();
     tui.keys(b"q");
     let status = tui.wait();
+    // Every call the tabs made was one the fakes answer: none fell through to `exit 1`.
+    let unexpected = fs::read_to_string(home.0.join("bin/unexpected")).unwrap_or_default();
+    assert!(unexpected.is_empty(), "calls no fake answers (a backend's argv changed?): {unexpected}");
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "q quits cleanly: wait status {status}");
     assert!(tui.output_contains(b"\x1b[?1049l"), "the terminal is restored (alternate screen left)");
     check(start, visited, cycled, peak);

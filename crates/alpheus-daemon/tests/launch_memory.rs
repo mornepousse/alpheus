@@ -26,7 +26,7 @@
 
 mod common;
 
-use common::{Daemon, DaemonOptions, FakeHyprland, SIGNATURE, Sway, daemon_binary, start_daemon_with};
+use common::{Daemon, DaemonOptions, FakeHyprland, SIGNATURE, Sway, start_daemon_with};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -61,12 +61,17 @@ fn require_release_panics_only_on_a_debug_build() {
 }
 
 /// The binary under test: `ALPHEUS_LAUNCH_UNDER_TEST`, or this tree's release `alpheus-launch`,
-/// built now next to the daemon under test (cargo builds a dev-dependency's library, never its
-/// binary).
+/// built now in this build's target directory (cargo builds a dev-dependency's library, never its
+/// binary). A daemon from another build (`ALPHEUS_DEMON_UNDER_TEST`) needs the launch of that build
+/// named too: this tree's would mix two builds in one measurement.
 fn launch_binary() -> PathBuf {
     if let Some(path) = std::env::var_os("ALPHEUS_LAUNCH_UNDER_TEST") {
         return PathBuf::from(path);
     }
+    assert!(
+        std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none(),
+        "ALPHEUS_DEMON_UNDER_TEST is set: name that build's alpheus-launch with ALPHEUS_LAUNCH_UNDER_TEST too"
+    );
     let ok = Command::new(env!("CARGO"))
         .args(["build", "--quiet", "--release", "-p", "alpheus-launch", "--bin", "alpheus-launch"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -74,7 +79,7 @@ fn launch_binary() -> PathBuf {
         .expect("cargo")
         .success();
     assert!(ok, "cargo build --release -p alpheus-launch failed");
-    daemon_binary().with_file_name("alpheus-launch")
+    PathBuf::from(env!("CARGO_BIN_EXE_alpheus-demon")).with_file_name("alpheus-launch")
 }
 
 /// One `alpheus-launch` run against this test's daemon, in its own process group: on drop, unless
