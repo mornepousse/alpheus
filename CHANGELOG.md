@@ -30,6 +30,14 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Changed
 
+- **A `gpu_sensor` naming a card also picks its usage** (27): with `gpu_metric = "auto"`, a
+  `[resources] gpu_sensor` naming a driver (`amdgpu`, `i915`, `xe`) now also picks that card for
+  the GPU's usage, a hybrid laptop's discrete GPU included, where it used to choose the hwmon only.
+  The card is read only while awake and at most once per its autosuspend delay and a second, so it
+  is never kept from falling asleep.
+  [Page](docs/features/resources.md),
+  [configuration](docs/configuration.md#resources),
+  [decisions](docs/decisions.md#a-gpus-usage-is-read-without-keeping-it-awake).
 - **The Tools menu opens on a command panel** (27): `alpheus-launch --tools` (Super+X) shows a search
   field, tabs (All, with Pinned, Recent and every category as a section, then each category), each tool
   on two lines with what it does, a detail card with its actions and keys, and a letter that runs a
