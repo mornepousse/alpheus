@@ -448,3 +448,36 @@ popup's buffers (five more cells per row) and the five capsule shapes, gone with
 the menu holds exactly what the base's does (+416 KB over rest, the first open's code and font
 pages); 20 more cycles keep +12 KB against +8 KB, within the test's bound (+128 KB) and one page
 of noise. No timer is added: the digits act inside `key`.
+
+Task 8, the countdown in the ⏻ menu (on pc-simu, release, base ce0cc064 (the branch just before
+Task 8: Task 7 with the owner's decisions 11 and 12) and the branch at Task 8 alternated, 3 rounds,
+`power_menu_pss_idle_open_and_closed --exact`, each run holding the memory lock exclusively through
+the turnstile; the machine was quiet, load average 0.0 to 0.1 through the rounds, 2026-11-27). Both
+sides draw the same `POWER_BAR`, without a countdown, so this measures the code:
+
+| Test | Base ce0cc064 | Branch, Task 8 |
+|---|---|---|
+| PSS without the module | 8,739 KB (×3) | 8,735 KB (×3) |
+| with the button at rest | 8,863…8,867 KB | 8,927 KB (×3) |
+| menu open | 9,433…9,437 KB | 9,433 KB (×3) |
+| closed / after 20 more cycles | 9,279…9,283 / 9,291…9,295 KB | 9,279 / 9,286…9,291 KB |
+
+Open, closed and after the cycles the branch is where the base is, to the page. At rest with the
+button it reads +60…+64 KB, the same in all three runs, and the open menu costs that much less over
+it, so the open total is unchanged: attributed (not traced) to which code pages the first paint of
+the button faults in (64 KB fault-around) in a binary whose layout the countdown's code moved, as
+in Task 6; the menu's first open faults them in on both sides.
+
+The countdown's own figures, on the branch only (`POWER_COUNTDOWN_BAR`: 5 s for the rows that ask
+and of its own for "Row one"; 3 runs each):
+
+| Test | Runs |
+|---|---|
+| loop-thread wake-ups over a 5 s countdown left to run (`power_countdown_wakes_once_a_second`) | 11, 11, 11 |
+| the same with the timer armed every 100 ms (the mutation, one run) | 56 |
+| loop / whole-daemon wake-ups in 10 s after a question and a countdown cancelled by Esc (`at_rest_no_wakeups_after_the_power_menu`) | 0 / 0, 0 / 0, 0 / 0 |
+
+The plan's bound was 6 wake-ups over the countdown (one a second); each second wakes the loop
+twice, its tick and the compositor's reply to the repaint the tick asks (attributed, not traced:
+the buffer release), so the test's bound is 12. The timer exists only while the countdown runs:
+none at rest after it was cancelled.

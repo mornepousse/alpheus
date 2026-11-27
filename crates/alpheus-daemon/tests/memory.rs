@@ -2879,7 +2879,7 @@ fn at_rest_no_wakeups_after_the_power_menu() {
 
 /// The most loop-thread wake-ups over a 5 s countdown: two a second, each tick's own and the
 /// compositor's reply to the repaint it asks (its buffer release), plus the end's. 11 measured
-/// (2026-11-27, release, three runs); a timer armed every 100 ms gives about 50.
+/// in each of three runs (2026-11-27, release); a timer armed every 100 ms gave 56.
 const COUNTDOWN_WAKEUPS_MAX: u64 = 12;
 
 /// A 5 s countdown left to run: the loop thread wakes once a second for it (its tick, and the

@@ -226,6 +226,10 @@ method):
   file-backed, paid once. It has no surface and no timer.
 - **Menu open:** about 432 KB; once closed, +280 KB over idle (the first open's code and font
   pages); twenty more open and close cycles +12 KB (`power_menu_pss_idle_open_and_closed`). Its
-  surface and pool exist only while it shows, its timer only while a question is pending.
-- **At rest:** no loop wake-up after the menu closed, a pending question included
-  (`at_rest_no_wakeups_after_the_power_menu`).
+  surface and pool exist only while it shows, its timer only while a question or a countdown is
+  pending.
+- **A countdown:** no memory of its own beyond a few bytes in the menu's model; while it runs the
+  loop thread wakes about twice a second (its tick and the compositor's reply to the repaint: 11
+  wake-ups over a 5 s countdown, `power_countdown_wakes_once_a_second`), and not at all after it.
+- **At rest:** no loop wake-up after the menu closed, a pending question or a countdown cancelled
+  by Esc included (`at_rest_no_wakeups_after_the_power_menu`).
