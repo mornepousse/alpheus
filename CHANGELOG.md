@@ -12,6 +12,20 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Added
 
+- **A wallpaper picker** (27): off unless `[wallpaper]` names a folder and your setter's command
+  (swaybg, wbg, `swww img`). **Wallpaper** in the Tools menu lists the folder's images by name
+  (png, jpg, jpeg, webp, bmp, gif; at most 2,000; no thumbnails, no image decoded) and starts the
+  setter with the one chosen as a child of the daemon: the new setter starts first and the old one
+  is ended by its handle only once the new one runs, so the screen never flashes empty and a
+  setter alpheus did not start is never touched. `then` runs a command after a set that worked
+  (matugen, so the bar's colours follow). The last choice is remembered and applied again when
+  the daemon starts; `alpheus-launch --wallpaper next` applies the next image, for a cron line or
+  a systemd timer of your own (no timer in the daemon). Cost: nothing while off or idle (0…+4 KB
+  anonymous at start); a setter running is one pidfd source, 0 wake-ups at rest; 50 `next` keep
+  +0 KB. A folder on a hung network mount blocks the bar while it is read.
+  [Page](docs/features/wallpaper.md),
+  [configuration](docs/configuration.md#wallpaper),
+  [decisions](docs/decisions.md#the-wallpaper-setter-is-alpheuss-child-replaced-new-first-and-ended-only-by-its-handle-it-dies-with-the-daemon-which-re-applies-the-last-choice-at-start).
 - **Resources: a named network interface, up to four disks, GPU usage** (27): `[resources]
   net_interface` names the interface `net` follows instead of the default route's;
   `disk_mounts` lists up to four paths whose filesystems `disk` measures (the bar shows the

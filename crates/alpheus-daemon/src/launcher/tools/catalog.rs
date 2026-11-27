@@ -56,6 +56,8 @@ pub enum BuiltinAction {
     Kill,
     /// A capture verb of the daemon (`--capture <word>`), replayed after the box closed.
     Capture(CaptureVerb),
+    /// The wallpaper folder's images by name (`[wallpaper]`): the chosen one goes to the setter.
+    Wallpaper,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,7 +114,7 @@ const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order: one row per line, read as a table.
 #[rustfmt::skip]
-pub const BUILTINS: [Builtin; 45] = [
+pub const BUILTINS: [Builtin; 46] = [
     b("quick.sound", "Sound", QUICK, "Set volume and output in quick settings", '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, "Pick a Wi-Fi network in quick settings", '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)).with_key('w'),
     b("quick.bluetooth", "Bluetooth", QUICK, "Connect a device in quick settings", '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)).with_key('b'),
@@ -133,6 +135,7 @@ pub const BUILTINS: [Builtin; 45] = [
     b("timer", "Timer", UTILITIES, "Set a focus timer", '\u{F051B}', BuiltinAction::Timer).with_key('t'),
     b("clipboard", "Clipboard", UTILITIES, "Pick from the clipboard history", '\u{F014C}', BuiltinAction::Clipboard).with_key('c'),
     b("emoji", "Emoji", UTILITIES, "Find an emoji and copy it", '\u{F0C68}', BuiltinAction::Emoji).with_key('m'),
+    b("wallpaper.pick", "Wallpaper", UTILITIES, "Pick a wallpaper from your folder", '\u{F0E09}', BuiltinAction::Wallpaper),
     b("capture.full", "Screenshot", CAPTURES, "Copy a screenshot of this screen", '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)).with_key('f'),
     b("capture.area", "Area", CAPTURES, "Select an area, copy it", '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)).with_key('a'),
     b("capture.area_save", "Area (save)", CAPTURES, "Select an area, save it to Pictures", '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
@@ -205,6 +208,8 @@ pub struct Context {
     pub ocr: bool,
     /// `[captures] record` is set and its program is on the `$PATH`.
     pub record: bool,
+    /// `[wallpaper]` is set (its folder resolved; whether it is there is the reader thread's to find).
+    pub wallpaper: bool,
 }
 
 /// Whether the row of capture `verb` shows, the compositor having screencopy: a row whose external
@@ -243,6 +248,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::UsbReset => c.usb_reset,
         BuiltinAction::Preset(_) => c.diagnostics,
         BuiltinAction::Capture(verb) => c.captures && capture_shown(verb, c),
+        BuiltinAction::Wallpaper => c.wallpaper,
     }
 }
 
@@ -336,7 +342,7 @@ impl Entry {
 }
 
 /// The choices, confirmation and prompts a built-in entry carries beyond its row: only the
-/// diagnostics ones and the shutdown have any.
+/// diagnostics ones, the shutdown and the wallpaper have any.
 fn builtin_shape(action: BuiltinAction, c: &Context) -> Shape {
     let plain = Shape { choices: Choices::None, confirm: false, ask: None, ask_overrides: Vec::new() };
     match action {
@@ -351,6 +357,9 @@ fn builtin_shape(action: BuiltinAction, c: &Context) -> Shape {
         },
         BuiltinAction::UsbReset => Shape { confirm: true, ..plain },
         BuiltinAction::Shutdown => Shape { choices: Choices::Fixed(crate::timer::shutdown::labels(c.shutdown_left)), ..plain },
+        // The folder is read when its level opens (`nav.rs`'s `Job::Folder`): never in the flat
+        // search, never recorded, as a `choices_cmd`.
+        BuiltinAction::Wallpaper => Shape { choices: Choices::Command, ..plain },
         _ => plain,
     }
 }

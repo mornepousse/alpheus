@@ -16,12 +16,13 @@ typing a path that starts with `/` does as well, from its first character (`[pre
 gives the key back). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
-  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, the
-  captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
+  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji,
+  Wallpaper (only with `[wallpaper]` set: its level lists the folder's images by
+  name, see [wallpaper.md](wallpaper.md)), the captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
   picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
   Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a
   process, Lock, the Power menu, an optional "Reload the bar", and the Diagnostics entries (network
-  scan, USB events and reset, the journal presets). The table has 45.
+  scan, USB events and reset, the journal presets). The table has 46.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
   with a confirmation, an on/off state, choices, or a text typed in the box.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.
@@ -252,7 +253,7 @@ twice in Mod+Space's search: drop the source once the menu is yours).
 
 In `crates/alpheus-daemon/src/launcher/tools/`:
 
-- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 45
+- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 46
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
   entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `panel.rs`: pure. The command panel's model: its tabs (`Tab`), the rows of the open tab (All's
@@ -262,7 +263,8 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
   picked chips and the tab moves; `catalog.rs` holds the descriptions, the default letters and
   `claim_letters`.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
-  `choices_cmd`, through the executor's `capture`.
+  `choices_cmd`, through the executor's `capture`, or of the wallpaper folder (`Job::Folder`: one
+  `read_dir`, at most 2,000 names, delivered as a choices read's lines).
 - `app.rs`: the wiring on the daemon's state. `context` builds the `Context` from the configuration and
   what the app knows; `tab_argv` and `builtin_argv` say what a built-in spawns; `Scheduler` is the
   reader's one-job-at-a-time queue; `ToolsApp` holds the question's `DeadlineTimer` and the scheduler;

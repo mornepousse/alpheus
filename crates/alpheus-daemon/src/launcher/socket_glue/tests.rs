@@ -1,5 +1,5 @@
 use super::*;
-use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, ShieldVerb, TimerVerb};
+use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, ShieldVerb, TimerVerb, WallpaperVerb};
 use std::io;
 
 /// Each verb to the one that answers it: the displays verbs to the output controller, never to
@@ -23,6 +23,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::Shield(ShieldVerb::Status), Route::Shield),
         (Request::Shield(ShieldVerb::Allow), Route::Shield),
         (Request::Capture(CaptureVerb::Select), Route::Capture),
+        (Request::Wallpaper(WallpaperVerb::Next), Route::Wallpaper),
         (Request::Clipboard, Route::Launcher),
         (Request::Tools, Route::Launcher),
         (Request::Kill, Route::Launcher),

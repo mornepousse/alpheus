@@ -2228,3 +2228,20 @@ taken when it shows and never refreshed while shown, and it is never logged. One
 `tooltips`, turns every tooltip off, the tray's included; `[tray] tooltips = false` still does.
 
 Date: 2026-11-27 · Source: tests `tooltips_name_no_private_field` (`tests/guardrails.rs`), `the_network_tooltip_says_link_vpns_and_limits` (`tooltips/tests.rs`), `a_hostile_title_is_drawn_clean_and_capped`, `nothing_left_to_read_shows_no_tooltip` (`session_bus/hover.rs`), `tooltips_false_shows_nothing_on_a_module` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-bar-actions-design.md` (decision 7)
+
+### The wallpaper setter is alpheus's child, replaced new-first and ended only by its handle; it dies with the daemon, which re-applies the last choice at start
+
+alpheus never draws a wallpaper: it starts the user's own setter (swaybg, wbg, `swww img`) with the
+chosen file as one argument, as a watched child of the daemon started on the event loop's thread,
+so the setter's parent-death signal is the daemon's own and it goes with the bar. A new setter
+starts first and the old one is dropped only once the new one runs (a one-shot only once it exits
+0), so the screen never flashes empty and a setter that cannot start leaves the wallpaper as it was.
+The only way a setter ends is the drop of the handle alpheus holds, which kills that child's own
+process group and reaps it: alpheus never signals, searches by name or reads a PID of a process it
+did not start, so a swaybg started by the compositor is left alone (the feature page says to remove
+it). Since the setter dies with the daemon, the daemon applies the remembered name again at start,
+without `then` (the colour files it writes are already there). With `remember = false` nothing is
+written to disk; `--wallpaper next` then steps from the name the running daemon last applied.
+Rotation is an external timer calling `--wallpaper next`: the daemon keeps no timer for it.
+
+Date: 2026-11-27 · Source: tests `the_wallpaper_ends_only_the_setter_it_started` (`tests/guardrails.rs`, owner decision 9), `a_restart_drops_only_the_old_handle_after_the_new_one_started`, `a_one_shot_setter_succeeds_only_on_exit_zero` (`wallpaper/setter/tests.rs`), `the_remembered_wallpaper_is_applied_at_start_without_then`, `next_without_remember_steps_from_the_name_last_applied` (`wallpaper/app/tests.rs`), `wallpaper_setter_dies_with_the_daemon`, `tools_wallpaper_replaces_the_setter` (`tests/headless_session.rs`), `at_rest_no_wakeups_with_a_wallpaper_setter`, `wallpaper_setter_replaced_50_times_no_growth` (`tests/memory.rs`); spec `docs/superpowers/specs/2026-11-27-wallpaper-design.md`

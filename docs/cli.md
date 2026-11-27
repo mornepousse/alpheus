@@ -84,6 +84,7 @@ alpheus-launch [--toggle | --close
                | --tools
                | --kill
                | --power
+               | --wallpaper next
                | -h|--help]
 ```
 
@@ -118,7 +119,45 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
 | `--kill` | open the kill list (your own processes, sorted by memory at open and by CPU 300 ms later), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
 | `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
+| `--wallpaper next` | apply the next image of `[wallpaper] dir` ([the wallpaper picker](features/wallpaper.md)): `launcher.toml` is read again, the folder listed by name, and the image after the last one applied (remembered, or in memory with `remember = false`; the first when none, or when it is gone) started through `set`, then `then`. For an external timer (below). Exit 2 when `[wallpaper]` is off, the folder cannot be read or holds no image |
 | `-h`, `--help` | print the usage and exit 0 |
+
+A rotation is an external timer calling `--wallpaper next`: the daemon keeps none of its own. A
+cron line, every 30 minutes (cron needs the session's `XDG_RUNTIME_DIR` to find the socket, here
+the one of the user of id 1000, and the full path that `command -v alpheus-launch` prints):
+
+```
+*/30 * * * * XDG_RUNTIME_DIR=/run/user/1000 /path/to/alpheus-launch --wallpaper next
+```
+
+Or a systemd user timer, `~/.config/systemd/user/wallpaper-next.service` and `.timer` (the same
+full path: a unit does not search your shell's `PATH`; the user manager sets `XDG_RUNTIME_DIR`):
+
+```ini
+# wallpaper-next.service
+[Unit]
+Description=Next wallpaper
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/alpheus-launch --wallpaper next
+```
+
+```ini
+# wallpaper-next.timer
+[Unit]
+Description=Next wallpaper every 30 minutes
+
+[Timer]
+OnUnitActiveSec=30min
+OnActiveSec=30min
+
+[Install]
+WantedBy=timers.target
+```
+
+then `systemctl --user enable --now wallpaper-next.timer`. While the daemon is not running the
+verb exits 3 and nothing changes.
 
 `--dmenu` options:
 
@@ -139,7 +178,7 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`, `--wallpaper`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
 `--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard`, `--tools` and

@@ -316,3 +316,38 @@ fn the_slot_is_free_when_the_last_event_is_delivered() {
         assert!(matches!(done_rx.recv_timeout(Duration::from_secs(3)).unwrap(), JobEvent::Choices { .. }));
     }
 }
+
+/// The wallpaper folder is read here like a `choices_cmd`'s output: its image names, sorted, as a
+/// choices read's lines; a folder that cannot be read is a failed read with one fixed note.
+#[test]
+fn a_folder_job_lists_names_like_a_choices_cmd() {
+    let d = TempDir::new("tools-folder");
+    for f in ["b.png", "secret notes.txt", "a.JPG"] {
+        std::fs::write(d.join(f), b"").unwrap();
+    }
+    let mut notes = Vec::new();
+    let job = Job::Folder { entry: 3, dir: d.to_path_buf(), token: 9 };
+    let last = run_job(job, &FakeExecutor::new(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    assert_eq!(last, JobEvent::Choices { entry: 3, token: 9, lines: v(&["a.JPG", "b.png"]), failed: false });
+    assert!(notes.is_empty(), "{notes:?}");
+    let missing = Job::Folder { entry: 3, dir: d.join("secret-gone"), token: 10 };
+    let last = run_job(missing, &FakeExecutor::new(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    assert_eq!(last, JobEvent::Choices { entry: 3, token: 10, lines: Vec::new(), failed: true });
+    assert_eq!(notes, ["tools: folder read failed"]);
+}
+
+/// A folder of more images than the level holds is cut at `MAX_FILES` names, and one fixed note
+/// says so (the count kept, never the folder or a name), as a cut `choices_cmd` does.
+#[test]
+fn a_folder_cut_at_the_cap_says_so_in_a_fixed_note() {
+    let d = TempDir::new("tools-folder-cut");
+    for i in 0..=crate::wallpaper::MAX_FILES {
+        std::fs::write(d.join(format!("secret-{i:04}.png")), b"").unwrap();
+    }
+    let mut notes = Vec::new();
+    let job = Job::Folder { entry: 1, dir: d.to_path_buf(), token: 2 };
+    let last = run_job(job, &FakeExecutor::new(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    let JobEvent::Choices { lines, failed, .. } = last else { panic!("a choices read: {last:?}") };
+    assert_eq!((lines.len(), failed), (crate::wallpaper::MAX_FILES, false));
+    assert_eq!(notes, ["tools: folder cut, 2000 kept"]);
+}

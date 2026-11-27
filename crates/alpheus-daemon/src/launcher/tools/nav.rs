@@ -3,12 +3,13 @@
 //! thread, no command, no log; the model (`Launcher`) owns the query and the selection and ranks
 //! the rows with its own `Ranker`, the host runs the jobs and arms the deadline.
 
-use super::catalog::{Catalog, Choices, EntryKind, Item};
+use super::catalog::{BUILTINS, BuiltinAction, Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
 use super::panel::{Panel, PanelRow, window};
 use crate::launcher::matching::ToolHitRow;
 use crate::launcher::sources::PATH_JOIN;
 use crate::session::{self, Activation as Ask};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// One `state` to read: the catalog entry, its 1-based position in launcher.toml (what a log names
@@ -29,9 +30,9 @@ pub struct Counts {
     pub unknown: usize,
 }
 
-/// What the reader thread is asked: the states of every entry that has one, or a
-/// `choices_cmd`. A choices job carries the token of the open it answers: a delivery with another
-/// token is stale.
+/// What the reader thread is asked: the states of every entry that has one, a `choices_cmd`, or
+/// the wallpaper folder's names. A choices or folder job carries the token of the open it answers:
+/// a delivery with another token is stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
     /// The entries to read, and the counts of the slices already read (none for a first slice).
@@ -40,6 +41,12 @@ pub enum Job {
         entry: usize,
         position: usize,
         argv: Vec<String>,
+        token: u64,
+    },
+    /// The wallpaper built-in's level: `dir`'s image names, answered as a choices read.
+    Folder {
+        entry: usize,
+        dir: PathBuf,
         token: u64,
     },
 }
@@ -172,6 +179,8 @@ pub struct ToolsState {
     recent: Vec<usize>,
     /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search, if any.
     picked: Vec<Option<usize>>,
+    /// The wallpaper folder its built-in lists, read only when its level opens.
+    folder: Option<PathBuf>,
 }
 
 impl ToolsState {
@@ -195,9 +204,17 @@ impl ToolsState {
             home: None,
             recent: Vec::new(),
             picked: Vec::new(),
+            folder: None,
         };
         state.build_flat();
         state
+    }
+
+    /// The wallpaper folder the Wallpaper built-in's level lists (None: the built-in is not shown).
+    /// Only kept: nothing is read before that level opens.
+    pub fn with_folder(mut self, dir: Option<PathBuf>) -> ToolsState {
+        self.folder = dir;
+        self
     }
 
     fn build_flat(&mut self) {
@@ -568,7 +585,7 @@ impl ToolsState {
         Some(selected)
     }
 
-    /// Opens the choices of `entry`, a `choices_cmd` one with the read to start.
+    /// Opens the choices of `entry`, a `choices_cmd` one or the wallpaper's with the read to start.
     fn drill_choices(&mut self, config: &ToolsConfig, entry: usize, selected: usize) -> Step {
         self.open(Level::Choices { entry }, selected);
         self.dynamic = None;
@@ -581,6 +598,12 @@ impl ToolsState {
                 self.reading = true;
                 Job::Choices { entry, position: c.position, argv: c.choices_cmd.clone(), token: self.token }
             }),
+            (Choices::Command, EntryKind::Builtin(b)) if BUILTINS.get(b).is_some_and(|b| b.action == BuiltinAction::Wallpaper) => {
+                self.folder.clone().map(|dir| {
+                    self.reading = true;
+                    Job::Folder { entry, dir, token: self.token }
+                })
+            }
             _ => None,
         };
         Step::Drill(job)

@@ -69,6 +69,7 @@ fn requests() -> Vec<Request> {
         Request::Capture(CaptureVerb::Select),
         Request::Capture(CaptureVerb::AreaSave),
         Request::Capture(CaptureVerb::RecordArea),
+        Request::Wallpaper(WallpaperVerb::Next),
     ]
 }
 
@@ -618,6 +619,23 @@ fn the_capture_words_round_trip_and_nothing_else_parses() {
     assert_eq!(CaptureVerb::parse("area_save"), None);
     assert!(matches!(decode(b"alpheus-launcher/1 capture\n"), Err(IpcError::Malformed(_))), "a bare capture is not a request");
     assert!(matches!(decode(b"alpheus-launcher/1 capture sideways\n"), Err(IpcError::Malformed(_))));
+}
+
+#[test]
+fn the_wallpaper_verb_round_trips() {
+    let r = Request::Wallpaper(WallpaperVerb::Next);
+    assert_eq!(encode_request(&r), b"alpheus-launcher/1 wallpaper next\n");
+    assert_eq!(decode(&encode_request(&r)), Ok(Some(r.clone())));
+    assert_eq!(WallpaperVerb::parse("next"), Some(WallpaperVerb::Next));
+    assert_eq!(WallpaperVerb::parse("Next"), None, "the words are exact");
+    assert!(matches!(decode(b"alpheus-launcher/1 wallpaper\n"), Err(IpcError::Malformed(_))), "a bare wallpaper is not a request");
+    assert_eq!(
+        decode(b"alpheus-launcher/1 wallpaper previous\n"),
+        Err(IpcError::Malformed("unknown wallpaper word \"previous\"".into())),
+        "an unknown word is named"
+    );
+    assert!(matches!(decode(b"alpheus-launcher/1 wallpaper next now\n"), Err(IpcError::Malformed(_))));
+    assert_eq!(r.reply_timeout(), Some(REPLY_TIMEOUT));
 }
 
 #[test]

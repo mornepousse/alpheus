@@ -33,9 +33,13 @@
 //! name = "Update"
 //! category = "Nix"
 //! run = ["my-update", "--all"]                       # also: terminal, hold, confirm, state, choices, choices_cmd
+//! [wallpaper]                                      # the wallpaper picker, off while dir is empty, see crate::wallpaper
+//! dir = "~/Pictures/walls"
+//! set = ["swaybg", "-m", "fill", "-i", "{file}"]
 //! ```
 
 use super::tools::config::{self as tools_config, ToolsConfig};
+use crate::wallpaper::{self, WallpaperConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -106,6 +110,8 @@ pub struct LauncherConfig {
     pub sources: Vec<SourceConfig>,
     /// The Tools menu's entries and categories, bounded.
     pub tools: ToolsConfig,
+    /// The wallpaper picker; off by default (`dir` empty).
+    pub wallpaper: WallpaperConfig,
     /// What this read cut past a bound (one line each, counts only): the caller logs them.
     pub notes: Vec<String>,
 }
@@ -125,6 +131,7 @@ impl Default for LauncherConfig {
             focus: vec!["wm-set".into(), "focus-window".into(), "{window}".into()],
             sources: Vec::new(),
             tools: ToolsConfig::default(),
+            wallpaper: WallpaperConfig::default(),
             notes: Vec::new(),
         }
     }
@@ -145,6 +152,7 @@ struct Raw {
     focus: Vec<String>,
     sources: Vec<SourceConfig>,
     tools: ToolsConfig,
+    wallpaper: WallpaperConfig,
 }
 
 impl Default for Raw {
@@ -163,6 +171,7 @@ impl Default for Raw {
             focus: d.focus,
             sources: d.sources,
             tools: d.tools,
+            wallpaper: d.wallpaper,
         }
     }
 }
@@ -195,7 +204,8 @@ impl LauncherConfig {
     ///   prefix of another (equal included);
     ///   a `tools` the file never sets (default `/`) that clashes is turned off with a note, one it sets is refused;
     /// - sources: `check_sources`;
-    /// - tools: `tools_config::validate` on the whole file, then `tools_config::bounded` (its notes go to `notes`).
+    /// - tools: `tools_config::validate` on the whole file, then `tools_config::bounded` (its notes go to `notes`);
+    /// - wallpaper: `wallpaper::validate`.
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let mut r: Raw = toml::from_str(s).map_err(|e| with_line(s, &e))?;
         let mut notes = Vec::new();
@@ -279,6 +289,7 @@ impl LauncherConfig {
         // Everything the file holds is checked, then the bounds cut.
         tools_config::validate(&tools)?;
         let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
+        wallpaper::validate(&r.wallpaper)?;
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
@@ -292,6 +303,7 @@ impl LauncherConfig {
             focus: r.focus,
             sources: r.sources,
             tools,
+            wallpaper: r.wallpaper,
             notes,
         })
     }
@@ -496,6 +508,7 @@ mod tests {
             focus: vec!["my-wm".into(), "focus".into(), "--window={window}".into()],
             sources: vec![],
             tools: ToolsConfig::default(),
+            wallpaper: WallpaperConfig::default(),
             notes: vec![],
         };
         assert_eq!(c, expected);

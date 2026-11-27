@@ -1013,7 +1013,9 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{
+        CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb, WallpaperVerb,
+    };
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -1040,6 +1042,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsRevert => "outputs-revert",
             Request::Shield(_) => "shield",
             Request::Capture(_) => "capture",
+            Request::Wallpaper(_) => "wallpaper",
         }
     }
     let all = [
@@ -1067,6 +1070,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsRevert,
         Request::Shield(ShieldVerb::Status),
         Request::Capture(CaptureVerb::Select),
+        Request::Wallpaper(WallpaperVerb::Next),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -1094,7 +1098,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs-keep",
             "outputs-revert",
             "shield",
-            "capture"
+            "capture",
+            "wallpaper"
         ]
     );
 }
@@ -1860,6 +1865,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // is on the loop from the command's start to its end, so an error exit or a refusal is told
         // to the user instead of vanishing. Readable only when the command ends.
         ("timer/app.rs", "Generic::new", 1),
+        // The wallpaper's setter, a watched child: its pidfd is on the loop from its start to its end
+        // (a one-shot setter's exit decides whether the set worked). Readable only when it ends.
+        ("wallpaper/app.rs", "Generic::new", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -4422,6 +4430,28 @@ fn tooltips_name_no_private_field() {
     }
 }
 
+/// The wallpaper picker's pure files: no panicking path (a file name or the folder may sit in a
+/// message), no log (a name, the folder or an argv never reaches one), no slicing by range.
+/// Production code only; the setter and the glue are pinned by their own test.
+const WALLPAPER_PURE: &[&str] = &["wallpaper.rs"];
+
+#[test]
+fn the_wallpaper_pure_files_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in WALLPAPER_PURE.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "eprintln!(", "println!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for code in production_code_without_comments(t).lines() {
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
 /// `launcher/tools/join.rs` alone: no other production file of the menu names their items.
 /// A plain word search for the shield would hit the emoji table and the VPN model, so the
@@ -6761,9 +6791,10 @@ fn a_picker_buffer_is_recorded_before_its_attach() {
 
 /// alpheus signals only the external program it started itself: the recorder's stop and the
 /// shutdown go through `Watched::interrupt` (the program's own process group, by the pid alpheus is
-/// still the parent of), in `record.rs` only. No capture file sends a signal of its own, names a
-/// process by a pattern or reads another process; only the tools and the recorder start a watched
-/// child.
+/// still the parent of), in `record.rs` only. No capture or wallpaper file sends a signal of its own,
+/// names a process by a pattern or reads another process; only the tools, the recorder and the
+/// wallpaper's setter start a watched child (the setter: the owner's go, 2026-11-27; it is ended by
+/// its handle only, `the_wallpaper_ends_only_the_setter_it_started`).
 #[test]
 fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
     for (p, t) in source_files() {
@@ -6778,9 +6809,12 @@ fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
             assert!(["timer/app.rs", "nonblocking.rs"].contains(&name.as_str()), "a free watched child in {name}");
         }
         if code.contains("spawn_watched(") {
-            assert!(["captures/tools.rs", "captures/record.rs", "nonblocking.rs"].contains(&name.as_str()), "a watched child in {name}");
+            assert!(
+                ["captures/tools.rs", "captures/record.rs", "wallpaper/setter.rs", "nonblocking.rs"].contains(&name.as_str()),
+                "a watched child in {name}"
+            );
         }
-        if name.starts_with("captures/") {
+        if name.starts_with("captures/") || name.starts_with("wallpaper/") || name == "wallpaper.rs" {
             for p in ["kill(", "SIGINT", "SIGTERM", "SIGKILL", "pkill", "killall", "pgrep", "pidof", "/proc/"] {
                 assert!(!code.contains(p), "{p} in {name}");
             }
@@ -6795,6 +6829,99 @@ fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
     assert!(interrupt < wait);
     // Past the limit the interrupted recorder is let go, never dropped (a drop kills its group).
     assert!(end[wait..].contains("self.child.release()"), "a recorder still finishing its file is never killed");
+}
+
+/// The wallpaper's setter is the one process the picker ever ends, and only by dropping the handle
+/// of the child it started (SIGKILL to that child's own group, then reaped: `Watched`'s drop). No
+/// file of the picker signals, interrupts or lets a child run on, finds a process by name or reads
+/// another's `/proc`; the setter is started in `wallpaper/setter.rs` alone, once. The owner's go
+/// (2026-11-27) widened the watched-child list above for it and asked for this pin with it.
+#[test]
+fn the_wallpaper_ends_only_the_setter_it_started() {
+    let mut spawns = Vec::new();
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !(name.starts_with("wallpaper/") || name == "wallpaper.rs") {
+            continue;
+        }
+        let code = production_code_without_comments(&t);
+        for p in [
+            ".interrupt()",
+            ".release()",
+            "kill(",
+            "killpg",
+            "SIGINT",
+            "SIGTERM",
+            "SIGKILL",
+            "libc::",
+            "pkill",
+            "killall",
+            "pgrep",
+            "pidof",
+            "/proc/",
+            "\"/proc\"",
+            "\"kill\"",
+            "Command::new",
+            "std::process::",
+            "nix::",
+            "spawn_watched_free(",
+        ] {
+            assert!(!code.contains(p), "{p} in {name}");
+        }
+        for _ in code.matches("spawn_watched(") {
+            spawns.push(name.clone());
+        }
+    }
+    assert_eq!(spawns, ["wallpaper/setter.rs"], "one start of the setter, in setter.rs");
+    // The new setter is started before the old handle goes: the replacement follows the spawn.
+    let setter = production_code_without_comments(&captures_file("wallpaper/setter.rs"));
+    let start = function_body(&setter, "pub fn start(");
+    let spawn = start.find("spawn_watched(").expect("the start spawns");
+    let mut replacements = 0;
+    for what in ["self.child = ", "self.pending = ", "self.child.take()", "self.pending.take()", "mem::take", "mem::replace"] {
+        for (at, _) in start.match_indices(what) {
+            replacements += 1;
+            assert!(spawn < at, "{what}: the old handle is dropped only after the new setter started");
+        }
+    }
+    // Any other `.take()` may drop a handle too: never before the spawn, but it does not count as
+    // the replacement (an unrelated `Option::take` must not stand in for one).
+    for (at, _) in start.match_indices(".take()") {
+        assert!(spawn < at, ".take(): the old handle is dropped only after the new setter started");
+    }
+    assert!(replacements > 0, "the start replaces a handle");
+}
+
+/// The wallpaper's files log fixed words only: every `log(` takes one string literal, never a
+/// `format!` (a file name, the folder or an argv never reaches a log).
+#[test]
+fn the_wallpaper_logs_fixed_words_only() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !(name.starts_with("wallpaper/") || name == "wallpaper.rs") {
+            continue;
+        }
+        let code = production_code_without_comments(&t);
+        for call in log_calls(&code) {
+            seen += 1;
+            let arg = call["log(".len()..call.len().saturating_sub(1)].trim();
+            let literal = arg.len() >= 2 && arg.starts_with('"') && arg.ends_with('"') && !arg[1..arg.len() - 1].contains('"');
+            assert!(literal && !arg.contains('{'), "a log call in {name} that is not a fixed word: {call}");
+        }
+        // The pure file builds its config errors with `format!` (keys, never values); the setter and
+        // the glue have no text to build at all.
+        for p in ["eprintln!(", "println!(", "dbg!(", "log::write("] {
+            assert!(!code.contains(p), "{p} in {name}");
+        }
+        if name.starts_with("wallpaper/") {
+            assert!(!code.contains("format!("), "format! in {name}");
+        }
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production_code(&t).contains(p), "{p} in {name}'s production code");
+        }
+    }
+    assert!(seen >= 5, "the log calls were found");
 }
 
 /// The daemon's stop ends a recording before anything else goes: the tool or the recorder is ended

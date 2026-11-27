@@ -56,10 +56,10 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness, and more) | ✅ volume and mute, and the microphone's mute (never its level: call apps move it), from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; opt-in kinds in `[osd] kinds`: Bluetooth power, do-not-disturb, the power profile, the keyboard layout and a new track, each starting only the source it reads; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
+| Wallpaper picker | ✅ off unless `[wallpaper]` is set: images picked by name from one folder in the Tools menu (no thumbnails, no image decoded), your own setter (swaybg, wbg, swww) started as alpheus's child and replaced new-first, `then` for matugen, the last choice applied again at start, `alpheus-launch --wallpaper next` for a timer of your own (see [The wallpaper picker](features/wallpaper.md)) | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 15 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
 | Appearance settings | ✅ the TUI's Theme tab: theme, light/dark mode, module colours, bar style, with a preview | ✅ | ✅ | ❌ | ❌ |
-| Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Settings GUI | ➖ TUI + TOML | ✅ | ✅ | ❌ | ❌ |
 | Dock, desktop widgets | 💭 | ➖ | ✅ | ❌ | ❌ |

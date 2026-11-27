@@ -176,9 +176,9 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
             let b = BUILTINS.get(index).ok_or_else(gone)?;
             let id = b.id;
             match choice {
-                // The shutdown's choice (a time) is not worth ranking by: recorded under the
-                // built-in alone, and replayed through the timer's verbs.
-                Some(c) if b.action == BuiltinAction::Shutdown => {
+                // The shutdown's choice (a time) is not worth ranking by, and a wallpaper's (a file
+                // name) is never kept: recorded under the built-in alone, and replayed by the glue.
+                Some(c) if matches!(b.action, BuiltinAction::Shutdown | BuiltinAction::Wallpaper) => {
                     remember(l, ctx, &format!("tool:builtin:{id}"));
                     Ok(Done::BuiltinChoice(index, c))
                 }
