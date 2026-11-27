@@ -159,7 +159,10 @@ today's behaviour, and no table at all changes nothing.
 | `"mute"` | Toggles the default output's mute. | |
 
 An invalid table makes the whole file fall back to the defaults, with one log line naming the key
-(`bindings.volume.right`), never the command.
+(`bindings.volume.right`), never the command. Two mistakes are caught while the file is read,
+before the key is known, so their line names neither the module nor the button: a string that is
+no verb (`unknown verb`, with the verbs listed; a command is a list) and a list holding something
+other than strings (`every argument must be a string`). Look for the binding in `[bindings.*]`.
 
 ```toml
 [bindings.volume]
