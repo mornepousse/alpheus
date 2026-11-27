@@ -1448,8 +1448,8 @@ macro_rules! rows {
 }
 
 rows! {
-    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Vpn => 5, Shield => 6, Mic => 7, Mixer => 8,
-    Dnd => 9, Profile => 10, KeepAwake => 11, NightLight => 12, Session => 13,
+    Volume => 0, Headset => 1, Brightness => 2, KbdBacklight => 3, Airplane => 4, Wifi => 5, Bluetooth => 6, Vpn => 7, Shield => 8,
+    Mic => 9, Mixer => 10, Dnd => 11, Profile => 12, KeepAwake => 13, NightLight => 14, Session => 15,
 }
 
 /// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
@@ -1467,6 +1467,8 @@ fn one_spec_per_row_in_variant_order() {
             "volume",
             "headset",
             "brightness",
+            "kbd-backlight",
+            "airplane",
             "wifi",
             "bluetooth",
             "vpn",
@@ -1481,7 +1483,7 @@ fn one_spec_per_row_in_variant_order() {
         ]
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
-    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+    assert_eq!(groups, [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
 }
 
 /// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
@@ -2121,4 +2123,290 @@ fn opening_the_shield_detail_closes_the_vpn_and_do_not_disturb_ones_in_place() {
     q.bt.open = false;
     q.wifi.open = true;
     assert!(q.other_detail_open());
+}
+
+/// A keyboard backlight at `level` of `max`.
+fn a_kbd(level: u8, max: u8) -> Option<Kbd> {
+    Some(Kbd { device: "tpacpi::kbd_backlight".into(), level, max })
+}
+
+fn set_kbd_level(n: u8) -> QuickAction {
+    run(&["brightnessctl", "--class=leds", "--device=tpacpi::kbd_backlight", "set", &n.to_string()], &format!("keyboard backlight {n}"))
+}
+
+/// The panel open on `w` with a keyboard backlight at `level` of `max`, its row selected.
+fn kbd_panel(w: &World, level: u8, max: u8) -> Quick {
+    let mut q = panel_opened_on(w, Focus::Top);
+    q.set_kbd(a_kbd(level, max));
+    q.selected = Row::KbdBacklight;
+    q
+}
+
+/// The line the keyboard backlight row is drawn on.
+fn kbd_line(l: &Live, q: &Quick) -> u16 {
+    lines(l, q).iter().position(|x| *x == Line::Row(Row::KbdBacklight)).unwrap() as u16
+}
+
+#[test]
+fn kbd_backlight_row_shows_only_with_a_device() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = panel_opened_on(&w, Focus::Top);
+    q.set_kbd(None);
+    assert!(!shown(&l, &q).contains(&Row::KbdBacklight), "no device, no row");
+    q.set_kbd(a_kbd(1, 2));
+    let rows = shown(&l, &q);
+    let at = rows.iter().position(|r| *r == Row::KbdBacklight).unwrap();
+    assert_eq!(rows[at - 1], Row::Brightness, "right under the brightness: {rows:?}");
+    assert_eq!(lines(&l, &q)[usize::from(kbd_line(&l, &q)) + 1], Line::Separator, "the last of the sliders' block");
+    q.backlight = None;
+    let rows = shown(&l, &q);
+    assert_eq!(rows[..2], [Row::Volume, Row::KbdBacklight], "without a backlight, right under the volume: {rows:?}");
+    let text = &row_texts(&rows_of(&l, &q))[usize::from(kbd_line(&l, &q))];
+    assert!(text.contains(KBD_BACKLIGHT) && text.ends_with(" 50%"), "the glyph and the level in percent: {text:?}");
+}
+
+/// `rows`, under another name: a test's `rows` local shadows the function.
+fn rows_of(l: &Live, q: &Quick) -> Boxed {
+    rows(l, q)
+}
+
+#[test]
+fn kbd_backlight_sets_with_brightnessctl_leds_class() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = kbd_panel(&w, 1, 2);
+    let t = Instant::now();
+    assert_eq!(q.key(&l, Key::Right, false, t), set_kbd_level(2), "one level up");
+    assert_eq!(q.kbd, a_kbd(2, 2), "shown at once");
+    assert_eq!(q.key(&l, Key::Right, false, later(t, 1)), QuickAction::Redraw, "already at max: no command");
+    assert_eq!(q.kbd, a_kbd(2, 2));
+    assert_eq!(q.key(&l, Key::Left, false, later(t, 2)), set_kbd_level(1));
+    assert_eq!(q.key(&l, Key::Left, false, later(t, 3)), set_kbd_level(0), "0 is allowed: an unlit keyboard");
+    assert_eq!(q.key(&l, Key::Left, false, later(t, 4)), QuickAction::Redraw, "already at 0: no command");
+    assert_eq!(q.press(&l, (BAR_START, kbd_line(&l, &q)), Button::Left, later(t, 5)), QuickAction::Redraw, "4 % of 2 is 0: no command");
+    assert_eq!(q.flush(), vec![], "nothing waits either");
+}
+
+#[test]
+fn kbd_backlight_enter_and_space_cycle() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = kbd_panel(&w, 2, 2);
+    let t = Instant::now();
+    assert_eq!(q.key(&l, Key::Enter, false, t), set_kbd_level(0), "max wraps to 0");
+    assert_eq!(q.key(&l, Key::Char(' '), false, later(t, 1)), set_kbd_level(1), "Space cycles too");
+    assert_eq!(q.key(&l, Key::Enter, false, later(t, 2)), set_kbd_level(2));
+    assert_eq!(q.key(&l, Key::Enter, true, later(t, 3)), QuickAction::Nothing, "a held Enter acts once");
+}
+
+#[test]
+fn kbd_backlight_press_on_the_bar_sets_the_nearest_level() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = kbd_panel(&w, 0, 2);
+    let y = kbd_line(&l, &q);
+    let t = Instant::now();
+    assert_eq!(q.press(&l, (BAR_START + 10, y), Button::Left, t), set_kbd_level(1), "50 % of 2");
+    assert_eq!(q.press(&l, (BAR_START + BAR - 1, y), Button::Left, later(t, 1)), set_kbd_level(2), "the last cell");
+    assert_eq!(q.press(&l, (BAR_START, y), Button::Left, later(t, 2)), set_kbd_level(0), "4 % of 2: 0");
+    assert_eq!(q.press(&l, (1, y), Button::Left, later(t, 3)), QuickAction::Nothing, "the glyph is no level");
+    q.selected = Row::Volume;
+    assert_eq!(q.scroll(&l, Some((5, y)), -1, later(t, 4)), set_kbd_level(1), "the wheel up: one level");
+    assert_eq!(q.scroll(&l, Some((5, y)), 3, later(t, 5)), set_kbd_level(0), "three notches down, one command");
+}
+
+#[test]
+fn kbd_backlight_is_paced_and_flushed() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = kbd_panel(&w, 100, 255);
+    let t = Instant::now();
+    let burst: Vec<QuickAction> = (0..5).map(|i| q.key(&l, Key::Right, i > 0, t + Duration::from_millis(20 * i))).collect();
+    assert_eq!(burst[0], set_kbd_level(113), "5 % of 255: 13 levels, at once");
+    assert!(burst[1..].iter().all(|a| *a == QuickAction::Redraw), "the rest wait: {burst:?}");
+    assert_eq!(q.deadline(), Some(t + COALESCE));
+    assert_eq!(q.due(t + COALESCE), Due { run: vec![set_kbd_level(165)], ..Due::default() }, "the latest level, once");
+    assert_eq!(q.due(t + COALESCE * 2), Due { kbd: true, ..Due::default() }, "quiet: the re-read");
+    q.set_kbd_reread(KbdReread::Level(150)); // read before brightnessctl wrote
+    assert_eq!(q.kbd, a_kbd(165, 255), "a re-read that disagrees is kept back for SETTLE");
+    assert_eq!(q.due(t + COALESCE * 2 + SETTLE), Due { kbd: true, ..Due::default() }, "one more re-read");
+    q.set_kbd_reread(KbdReread::Level(150));
+    assert_eq!(q.kbd, a_kbd(150, 255), "then the re-read wins");
+    assert_eq!(q.deadline(), None, "nothing pending: no timer");
+    let t = t + COALESCE * 3 + SETTLE;
+    assert_eq!(q.key(&l, Key::Left, false, t), set_kbd_level(137), "a new window: at once");
+    assert_eq!(q.key(&l, Key::Left, true, t), QuickAction::Redraw);
+    assert_eq!(q.flush(), vec![set_kbd_level(124)], "closing sends what waits");
+    assert_eq!(q.flush(), vec![], "once");
+}
+
+#[test]
+fn kbd_backlight_logs_no_device() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut actions = Vec::new();
+    for (level, max) in [(1, 2), (100, 255)] {
+        let mut q = kbd_panel(&w, level, max);
+        let y = kbd_line(&l, &q);
+        for (i, k) in [Key::Right, Key::Left, Key::Enter, Key::Char(' ')].into_iter().enumerate() {
+            actions.push(q.key(&l, k, false, later(t, i as u32)));
+            actions.push(q.key(&l, k, true, later(t, i as u32)));
+        }
+        actions.push(q.press(&l, (BAR_START + 5, y), Button::Left, later(t, 5)));
+        actions.push(q.scroll(&l, Some((5, y)), -1, later(t, 5)));
+        actions.extend(q.due(later(t, 6)).run);
+        actions.push(q.key(&l, Key::Right, false, later(t, 6)));
+        actions.extend(q.flush());
+    }
+    let whats: Vec<&String> =
+        actions.iter().filter_map(|a| if let QuickAction::Run { what, .. } = a { Some(what) } else { None }).collect();
+    assert!(whats.len() >= 10, "{whats:?}");
+    for what in whats {
+        assert!(what.starts_with("keyboard backlight "), "{what}");
+        assert!(!what.contains("kbd_backlight") && !what.contains("tpacpi"), "a device name in the log: {what}");
+    }
+}
+
+#[test]
+fn kbd_backlight_reread_gone_hides_the_row() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = kbd_panel(&w, 1, 2);
+    q.set_kbd_reread(KbdReread::Unreadable);
+    assert_eq!(q.kbd, a_kbd(1, 2), "one failed read keeps the row");
+    q.set_kbd_reread(KbdReread::Level(2));
+    assert_eq!(q.kbd, a_kbd(2, 2), "changed outside alpheus");
+    q.set_kbd_reread(KbdReread::Gone);
+    assert_eq!(q.kbd, None);
+    q.fit(&l);
+    assert!(!shown(&l, &q).contains(&Row::KbdBacklight));
+    assert_ne!(q.selected, Row::KbdBacklight, "the selection falls back on a shown row");
+    assert!(shown(&l, &q).contains(&q.selected));
+}
+
+fn airplane_command_of(block: bool) -> QuickAction {
+    let verb = if block { "block" } else { "unblock" };
+    run_of(&["rfkill", verb, "wlan", "bluetooth", "wwan"], if block { "airplane on" } else { "airplane off" })
+}
+
+/// The panel open on `w` with the Wi-Fi row shown and airplane mode `a`, its row selected.
+fn airplane_panel(w: &World, a: Airplane) -> Quick {
+    let mut q = panel_opened_on(w, Focus::Top);
+    q.set_wifi(Some(wifi_state(true, true, false)), Instant::now());
+    q.set_airplane(Some(a));
+    q.selected = Row::Airplane;
+    q
+}
+
+#[test]
+fn airplane_row_sits_above_wifi() {
+    let w = World::full();
+    let l = w.live();
+    let q = airplane_panel(&w, Airplane::Off);
+    let rows = shown(&l, &q);
+    let at = rows.iter().position(|r| *r == Row::Airplane).unwrap();
+    assert_eq!(rows[at + 1], Row::Wifi, "right above the Wi-Fi: {rows:?}");
+    let all = lines(&l, &q);
+    let line = all.iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap();
+    assert_eq!(all[line - 1], Line::Separator, "the first of the radios' block");
+    let texts = row_texts(&rows_of(&l, &q));
+    assert!(texts[line].contains(AIRPLANE) && texts[line].contains("Airplane mode") && texts[line].ends_with("○ off"), "{texts:?}");
+    let mut q = q;
+    q.set_airplane(Some(Airplane::On));
+    assert!(row_texts(&rows_of(&l, &q))[line].ends_with("ON  ●"));
+    q.set_airplane(None);
+    assert!(!shown(&l, &q).contains(&Row::Airplane), "no radio, no row");
+}
+
+#[test]
+fn airplane_toggle_runs_one_rfkill_for_the_three_types() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), airplane_command_of(true));
+    assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "re-read once rfkill ran");
+    assert_eq!(q.deadline(), Some(t + TOGGLE_REREAD));
+    assert_eq!(q.due(t + TOGGLE_REREAD), Due { airplane: true, ..Due::default() });
+    assert_eq!(q.reread_airplane, None, "once");
+    let mut q = airplane_panel(&w, Airplane::On);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), airplane_command_of(false), "leaving unblocks all three");
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Enter, false, t), airplane_command_of(true), "Enter acts as Space");
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space acts once");
+    let line = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap() as u16;
+    q.selected = Row::Volume;
+    assert_eq!(q.press(&l, (5, line), Button::Left, t), airplane_command_of(true), "a click is Enter");
+    assert_eq!(q.selected, Row::Airplane);
+}
+
+#[test]
+fn airplane_space_does_nothing_when_hard_blocked() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut q = airplane_panel(&w, Airplane::HardBlocked);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing);
+    assert_eq!(q.reread_airplane, None, "nothing ran: nothing to re-read");
+    let line = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap();
+    assert!(row_texts(&rows_of(&l, &q))[line].ends_with("hard blocked"), "{:?}", row_texts(&rows_of(&l, &q)));
+}
+
+#[test]
+fn a_radio_row_switch_rereads_airplane() {
+    let mut w = World::full();
+    let t = Instant::now();
+    {
+        let l = w.live();
+        let mut q = airplane_panel(&w, Airplane::On);
+        q.selected = Row::Wifi;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "off"], "wifi off"));
+        assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "the Wi-Fi radio switched: airplane re-read");
+        assert!(q.due(t + TOGGLE_REREAD).airplane);
+        let mut q = airplane_panel(&w, Airplane::On);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        assert_eq!(q.reread_airplane, None, "opening the detail switches nothing");
+        let mut q = panel_opened_on(&w, Focus::Top);
+        q.set_wifi(Some(wifi_state(true, true, false)), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Char(' '), false, t);
+        assert_eq!(q.reread_airplane, None, "no airplane row (off, or no radio): nothing to re-read");
+    }
+    w.bluetooth = Some(BtState::Off);
+    let l = w.live();
+    let mut q = airplane_panel(&w, Airplane::On);
+    q.bt.view = Some(BtView {
+        adapter: Some(crate::system::BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }),
+        ..BtView::default()
+    });
+    q.selected = Row::Bluetooth;
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["rfkill", "unblock", "bluetooth"], "bluetooth unblock"));
+    assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "rfkill unblocked the Bluetooth: airplane re-read");
+    assert!(q.due(t + TOGGLE_REREAD).airplane);
+}
+
+#[test]
+fn airplane_off_reads_nothing() {
+    let root = std::env::temp_dir().join(format!("alpheus-{}-quick-rfkill", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let d = root.join("rfkill0");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("type"), "wlan\n").unwrap();
+    std::fs::write(d.join("soft"), "0\n").unwrap();
+    std::fs::write(d.join("hard"), "0\n").unwrap();
+    let mut c = QuickConfig { rfkill_dir: root.clone(), ..QuickConfig::default() };
+    assert_eq!(app::airplane_at_open(&c), Some(Airplane::Off), "the radio read");
+    c.airplane = false;
+    assert_eq!(app::airplane_at_open(&c), None, "airplane = false: nothing read, no row");
+    let _ = std::fs::remove_dir_all(&root);
+    let w = World::full();
+    let l = w.live();
+    let mut q = panel_opened_on(&w, Focus::Top);
+    q.set_airplane(app::airplane_at_open(&c));
+    assert!(!shown(&l, &q).contains(&Row::Airplane));
 }

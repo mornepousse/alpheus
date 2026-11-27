@@ -10,6 +10,24 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 ### 2026-11
 
+#### Added
+
+- **Keyboard backlight and airplane mode in quick settings** (27): a keyboard backlight slider right
+  under the brightness, over the LED's own levels (← → one level, a step of `step` % above 10
+  levels, Space or Enter cycle, 0 allowed), set with `brightnessctl --class=leds`; an airplane mode
+  switch at the top of the radios that blocks
+  Wi-Fi, Bluetooth and WWAN in one `rfkill` command and unblocks all three to leave. Both are read
+  from sysfs when the panel opens (airplane mode again 300 ms after any radio command) and hold
+  nothing while it is closed: no fd, thread or timer. New keys: `[quick] kbd_backlight`,
+  `kbd_backlight_dir`, `airplane`, `rfkill_dir`. Cost against main: +24 KiB in the stripped binary,
+  nothing measurable at start; the first open of the panel keeps +58…+72 KB more than main's, rows
+  shown or not (the binary's code pages: the open path spans 16 more of them); both rows shown,
+  +28…+34 KB PSS while the panel is open (+0…+8 KB anonymous), within noise once closed; 0
+  wake-ups at rest.
+  [Page](docs/features/quick-settings.md#what-it-does),
+  [configuration](docs/configuration.md#quick),
+  [decisions](docs/decisions.md#airplane-mode-blocks-wi-fi-bluetooth-and-wwan-through-rfkill-and-leaving-it-unblocks-all-three).
+
 #### Changed
 
 - **The Tools menu opens on a command panel** (27): `alpheus-launch --tools` (Super+X) shows a search

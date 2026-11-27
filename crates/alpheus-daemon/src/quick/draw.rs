@@ -23,10 +23,14 @@
 //!
 //! See: docs/features/quick-settings.md and docs/decisions.md ("The selected slider row is banded across the whole row").
 
-use super::{FAILED_TAG, GLYPH_AT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines};
+use super::{
+    AIRPLANE, FAILED_TAG, GLYPH_AT, KBD_BACKLIGHT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH,
+    lines,
+};
 use crate::grid::{Grid, Style, text_width};
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
+use crate::rfkill::Airplane;
 use crate::segments::SHIELD;
 use crate::session::Session;
 use crate::system::{HeadsetMode, Volume};
@@ -106,6 +110,25 @@ pub(super) fn draw_headset(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
 pub(super) fn draw_brightness(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     if let Some(b) = &q.backlight {
         slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
+    }
+}
+
+/// The keyboard backlight row: the slider, its level as a percentage of the device's maximum.
+pub(super) fn draw_kbd(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    if let Some(k) = &q.kbd {
+        slider(g, KBD_BACKLIGHT, Volume { percent: k.percent(), muted: false }, false, selected);
+    }
+}
+
+/// The airplane mode row: the switch, or `hard blocked` dim when every radio is held off by a kill
+/// switch (Space does nothing then).
+pub(super) fn draw_airplane(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    let Some(a) = q.airplane else { return };
+    text_row(g, Some(AIRPLANE), "Airplane mode", "", Style::NORMAL, selected);
+    match a {
+        Airplane::HardBlocked => write_cell(g, "hard blocked", Style::MUTED),
+        Airplane::On => write_switch(g, Some(true)),
+        Airplane::Off => write_switch(g, Some(false)),
     }
 }
 

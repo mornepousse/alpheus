@@ -228,6 +228,10 @@ See [the on-screen display](features/osd.md).
 | `vpn_more` | command | launcher.toml's `terminal` + `nmtui-edit` | same | `More…` in the VPN detail; absent: the default; `[]` hides it. |
 | `mixer` | command | launcher.toml's `terminal` + `wiremix` | same | `Mixer…` under the microphone; absent: the default (not checked against `$PATH`: without wiremix its terminal closes at once); `[]` hides it. |
 | `dnd_until` | string `HH:MM` | `"08:00"` | a local time 0:00 to 23:59 | The do-not-disturb detail's "Until" entry (tomorrow if already past). |
+| `kbd_backlight` | bool | `true` | | The keyboard backlight row; still hidden without a `*::kbd_backlight` LED. `false`: nothing is read when the panel opens. |
+| `kbd_backlight_dir` | path | `"/sys/class/leds"` | absolute | Where LEDs are listed; read when the panel opens (and 150 ms after its command), never written. |
+| `airplane` | bool | `true` | | The airplane mode row; still hidden without a Wi-Fi, Bluetooth or WWAN radio. `false`: nothing is read when the panel opens. |
+| `rfkill_dir` | path | `"/sys/class/rfkill"` | absolute | Where rfkill switches are listed; read when the panel opens (and 300 ms after a radio command), never written. |
 
 A toggle's `toggle` is a command run as given (`[]` hides the row); its `state` is `""` (unknown,
 the row shows `·`), `"file:<path>"` (on while the file exists; the path starts with `/`, `~/` or
@@ -424,6 +428,10 @@ poweroff = ["systemctl", "poweroff"]
 # vpn_more = ["foot", "-e", "nmtui-edit"]  # More… in the VPN detail; absent (the default): launcher.toml's terminal, then nmtui-edit; [] hides it
 # mixer = ["foot", "-e", "wiremix"]        # Mixer… under the microphone; absent (the default): launcher.toml's terminal, then wiremix; [] hides it
 dnd_until = "08:00"                         # the do-not-disturb detail's "Until" entry, HH:MM (local time, tomorrow if past)
+kbd_backlight = true                        # the keyboard backlight row (hidden without a *::kbd_backlight LED); false: nothing read
+kbd_backlight_dir = "/sys/class/leds"       # where LEDs are listed (absolute); read when the panel opens, never written
+airplane = true                             # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
+rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (absolute); read when the panel opens, never written
 
 [timer]
 countdown = 10       # minutes, the popup's Timer row at start (1 to 180)

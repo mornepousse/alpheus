@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 pub const MAX_ENTRIES: usize = 64;
 
 /// A device name as sysfs lists it: no path, nothing hidden.
-fn plain(name: &str) -> bool {
+pub(crate) fn plain(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0']) && !name.chars().any(char::is_control)
 }
 

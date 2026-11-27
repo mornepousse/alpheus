@@ -682,10 +682,29 @@ pub fn base_config() -> bool {
     env::var_os("ALPHEUS_TEST_BASE_CONFIG").is_some_and(|v| v == "1")
 }
 
+/// Whether the file at `binary` holds `key` as bytes: a daemon whose config knows a key carries its
+/// name (serde's field match, the check's message); a build from before it does not.
+pub fn binary_knows(binary: &Path, key: &str) -> bool {
+    fs::read(binary).is_ok_and(|bytes| bytes.windows(key.len()).any(|w| w == key.as_bytes()))
+}
+
+/// The quick panel's hardware folders, each injected whenever the daemon under test knows its key
+/// (read once per test process, and only for a base build: this build always knows them).
+const QUICK_DIRS: [(&str, &str); 2] = [("kbd_backlight_dir", "quick-leds"), ("rfkill_dir", "quick-rfkill")];
+
+fn under_test_knows(key: &str) -> bool {
+    static KNOWN: std::sync::OnceLock<[bool; QUICK_DIRS.len()]> = std::sync::OnceLock::new();
+    let known = KNOWN.get_or_init(|| QUICK_DIRS.map(|(k, _)| binary_knows(&daemon_binary(), k)));
+    QUICK_DIRS.iter().zip(known).any(|((k, _), known)| *k == key && *known)
+}
+
 /// What the harness writes as bar.toml: the test's `text`, with the camera watch's `[privacy]`
-/// roots and the DisplayLink detection's `[displays] drm_dir` pointed at empty directories under
-/// `runtime` (never the machine's /dev, /proc or /sys) unless the test sets its own; `base`
-/// (`base_config`) leaves `[displays]` out.
+/// roots, the DisplayLink detection's `[displays] drm_dir` and the quick panel's
+/// `[quick] kbd_backlight_dir` and `rfkill_dir` pointed at empty directories under `runtime` (never
+/// the machine's /dev, /proc or /sys) unless the test sets its own; `base` (`base_config`) leaves
+/// `[displays]` and the timer's `proc_dir` out, and the quick folders too unless the binary under
+/// test knows their keys (`binary_knows`): a base build that reads LEDs or radios never reads the
+/// machine's.
 pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     let (dev, proc, drm) = (runtime.join("privacy-dev"), runtime.join("privacy-proc"), runtime.join("displays-drm"));
     let mut text = text.to_string();
@@ -700,6 +719,15 @@ pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     }
     if !base && !text.contains("drm_dir") {
         text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
+    }
+    // The keyboard backlight row reads LEDs there, never the machine's /sys/class/leds; the airplane
+    // mode row reads the radios there, never the machine's /sys/class/rfkill (its `rfkill` command
+    // acts by type whatever this says: the private PATH, without `rfkill`, is what keeps the
+    // machine's radios safe; this keeps the row's state the test's own).
+    for (key, folder) in QUICK_DIRS {
+        if (!base || under_test_knows(key)) && !text.contains(key) {
+            text = under_table(&text, "quick", &format!("{key} = \"{}\"\n", runtime.join(folder).display()));
+        }
     }
     text
 }
@@ -726,6 +754,12 @@ fn coreutils_dir() -> PathBuf {
     for real in ["pkexec", "usbguard"] {
         assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
     }
+    // Nor the quick panel's hardware tools: `brightnessctl` would set the machine's keyboard
+    // backlight and `rfkill` cut its radios (by type, whatever directory the test points at); only
+    // a recorder on the private PATH may stand in for them.
+    for real in ["brightnessctl", "rfkill"] {
+        assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
+    }
     dir
 }
 
@@ -745,7 +779,7 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc"] {
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc", "quick-leds", "quick-rfkill"] {
         fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
     fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();

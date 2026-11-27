@@ -2009,3 +2009,32 @@ catch a doubling rather than a boot's drift; a growth bound reads anonymous memo
 are recorded in `docs/measurements.md`, "Parts that are not resident".
 
 Date: 2026-11-27 · Source: tests `the_control_center_stays_light_through_every_tab` (`crates/alpheus/tests/memory.rs`), `alpheus_launch_stays_light` (`crates/alpheus-daemon/tests/launch_memory.rs`)
+
+### Airplane mode blocks Wi-Fi, Bluetooth and WWAN through rfkill, and leaving it unblocks all three
+
+The quick panel's airplane mode row runs one command, `rfkill block wlan bluetooth wwan`, and
+leaving it runs `rfkill unblock wlan bluetooth wwan`. The three types are the radios a laptop
+carries that the user expects airplane mode to cut; GPS, NFC, UWB and FM are left alone, so it is
+never `rfkill block all`. Leaving does not remember which radios were on before: it unblocks all
+three, as GNOME does, and a radio the user wants off stays one Space away on its own row. rfkill
+is the one switch the kernel and both services follow: NetworkManager and BlueZ see the block and
+the Wi-Fi and Bluetooth rows update through their existing feeds. Driving NetworkManager's
+`WirelessEnabled` and BlueZ's `Powered` instead would take two services and two write
+connections, and an adapter powered off is not a blocked radio; writing an
+`RFKILL_OP_CHANGE_ALL` event to `/dev/rfkill` would take a raw device, `unsafe` and a fake device in
+tests. The state is read from sysfs when the panel opens and 300 ms after a radio command: no
+`/dev/rfkill` fd, watch or thread. A radio held off by a kill switch does not count, and when every
+one is, the row says `hard blocked` and does nothing.
+
+Date: 2026-11-27 · Source: tests `airplane_toggle_runs_one_rfkill_for_the_three_types`, `airplane_space_does_nothing_when_hard_blocked` (`quick/tests.rs`), `airplane_state_from_sysfs` (`rfkill.rs`), `every_quick_command_stays_on_the_allowlist` (`tests/guardrails.rs`), `quick_airplane_space_blocks_through_rfkill` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-quick-radios-design.md` (owner decisions 1 and 2)
+
+### The keyboard backlight steps through the device's own levels, and 0 is allowed
+
+The keyboard backlight row moves one of the LED's own levels per ← or → on a keyboard with at most
+ten (three on a ThinkPad: off, low, high), and the panel's step in percent of the maximum above that,
+at least one level; the row shows a percentage of the maximum, and Space or Enter cycle 0 → max → 0.
+A 5 % step like the screen's would move nothing on a keyboard with two lit levels. Unlike the
+screen, which the panel never sets below 1 % (a black screen leaves no way back), 0 is allowed: an
+unlit keyboard is a normal state, and the screen still shows the row to light it again.
+
+Date: 2026-11-27 · Source: tests `kbd_backlight_steps_by_level_or_by_percent` (`kbd_backlight.rs`), `kbd_backlight_sets_with_brightnessctl_leds_class`, `kbd_backlight_enter_and_space_cycle` (`quick/tests.rs`), `quick_kbd_backlight_right_sends_brightnessctl_leds` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-quick-radios-design.md` (owner decision 3)

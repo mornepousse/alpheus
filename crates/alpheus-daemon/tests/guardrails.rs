@@ -16,6 +16,7 @@ use alpheus_daemon::actions::{Button, command, run};
 use alpheus_daemon::appearance::SETTING_RULE;
 use alpheus_daemon::compositor::{CompositorState, Toplevel, Window, Workspace};
 use alpheus_daemon::config::{BarConfig, ModuleId, QuickConfig, ToggleConfig};
+use alpheus_daemon::kbd_backlight::Kbd;
 use alpheus_daemon::keys::Key;
 use alpheus_daemon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_daemon::launcher::desktop::{DesktopAction, DesktopEntry};
@@ -29,6 +30,7 @@ use alpheus_daemon::notify::NotifyView;
 use alpheus_daemon::power::{Power, PowerAction};
 use alpheus_daemon::privacy::{Capture, Indicator};
 use alpheus_daemon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
+use alpheus_daemon::rfkill::Airplane;
 use alpheus_daemon::session::{self, Session};
 use alpheus_daemon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_daemon::session_bus::{
@@ -2164,6 +2166,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "osd/mod.rs",
     "osd/surface.rs",
     "backlight.rs",
+    "kbd_backlight.rs",
+    "rfkill.rs",
     "notify/bubbles.rs",
     "notify/bubbles_surface.rs",
     "notify/panel.rs",
@@ -3024,6 +3028,58 @@ fn the_quick_model_and_its_state_reader_only_read() {
     }
 }
 
+/// The quick panel's sysfs readers for the keyboard backlight and the radios: each file
+/// must exist (`unmatched_entries`), so a rename cannot take one out of the checks in silence.
+const RADIO_READERS: &[&str] = &["kbd_backlight.rs", "rfkill.rs"];
+
+/// The radio readers read sysfs and decide, nothing else: no file written, nothing created, no raw
+/// system call; and, through `NO_THREAD_NOR_COMMAND`, no command run (brightnessctl and rfkill go through
+/// the panel's `QuickAction`, never from here). Production code only.
+#[test]
+fn the_radio_readers_only_read() {
+    let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
+    let unmatched = unmatched_entries(RADIO_READERS, &names);
+    assert!(unmatched.is_empty(), "RADIO_READERS names no existing file: {unmatched:?}");
+    let mut checked = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !RADIO_READERS.contains(&name.as_str()) {
+            continue;
+        }
+        checked += 1;
+        let prod = production_code(&t);
+        for never in [
+            "fs::write",
+            "OpenOptions",
+            "File::create",
+            "File::options(",
+            "set_permissions",
+            "remove_file",
+            "create_dir",
+            "fs::rename",
+            "fs::copy",
+            "libc::",
+            "unsafe",
+        ] {
+            assert!(!prod.contains(never), "{never} in {name}: the radio readers only read");
+        }
+    }
+    assert_eq!(checked, RADIO_READERS.len());
+}
+
+/// No panic in the radio readers' production code, whatever sysfs says.
+#[test]
+fn the_radio_readers_have_no_panicking_path() {
+    let files = source_files();
+    for &name in RADIO_READERS {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
 /// Every command the panel can build — every key on every row (twice: the
 /// confirmation's second activation), the outputs detail, every press of every cell with every
 /// button (twice), the wheel both ways — is one of the exact shapes; the configured commands run as
@@ -3059,6 +3115,8 @@ fn every_quick_command_stays_on_the_allowlist() {
     let fresh = || {
         let mut q = Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
         q.set_headset(Some(Headset { device: 61, label: "CasqueBT".into(), active: HeadsetMode::HiFi, hifi: 1, mic: 3 }));
+        q.set_kbd(Some(Kbd { device: "fake::kbd_backlight".into(), level: 1, max: 2 }));
+        q.set_airplane(Some(Airplane::Off));
         q
     };
     let t = Instant::now();
@@ -3077,6 +3135,29 @@ fn every_quick_command_stays_on_the_allowlist() {
             q.selected = row;
             record(q.key(&live, k, false, t));
             record(q.key(&live, k, false, later));
+        }
+    }
+    // Airplane mode on: every key on every row and every press again, from that state.
+    let fresh_on = || {
+        let mut q = fresh();
+        q.set_airplane(Some(Airplane::On));
+        q
+    };
+    for row in quick::shown(&live, &fresh_on()) {
+        for k in keys {
+            let mut q = fresh_on();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, later));
+        }
+    }
+    for y in 0..quick::lines(&live, &fresh_on()).len() as u16 {
+        for x in 0..quick::WIDTH + 2 {
+            for b in [Button::Left, Button::Right, Button::Middle] {
+                let mut q = fresh_on();
+                record(q.press(&live, (x, y), b, t));
+                record(q.press(&live, (x, y), b, later));
+            }
         }
     }
     let mut q = fresh();
@@ -3285,6 +3366,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
             ["wpctl", "set-profile", id, idx] => *id == "61" && ["1", "3"].contains(idx),
             ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // never below 1 % (docs/decisions.md)
+            ["brightnessctl", "--class=leds", "--device=fake::kbd_backlight", "set", n] => ["0", "1", "2"].contains(n), // the device's own levels
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
             ["nmcli", "device", "wifi", "rescan"] => true,
@@ -3293,6 +3375,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
             ["rfkill", "unblock", "bluetooth"] => true,
+            ["rfkill", "block" | "unblock", "wlan", "bluetooth", "wwan"] => true, // airplane mode: by type, never an index
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
@@ -3311,6 +3394,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "brightnessctl --class=backlight --device=intel_backlight set 55%",
         "brightnessctl --class=backlight --device=intel_backlight set 45%",
         "brightnessctl --class=backlight --device=intel_backlight set 50%",
+        "brightnessctl --class=leds --device=fake::kbd_backlight set 2",
+        "brightnessctl --class=leds --device=fake::kbd_backlight set 0",
         "powerprofilesctl set performance",
         "fake-keep-awake",
         "fake-night --toggle",
@@ -3332,6 +3417,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "fake-vpn-more",
         "fake-mixer",
         "rfkill unblock bluetooth",
+        "rfkill block wlan bluetooth wwan",
+        "rfkill unblock wlan bluetooth wwan",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }

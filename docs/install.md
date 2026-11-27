@@ -117,6 +117,7 @@ what you use.
 | Sound (bar module, volume OSD, quick panel, privacy indicators) | PipeWire with WirePlumber: `pw-dump` (a long-running `pw-dump -m -N -R` child) to read, `wpctl` to act |
 | Network (bar, quick Wi-Fi) | NetworkManager on the system D-Bus to read; `nmcli` to act (Wi-Fi radio, connect, disconnect) |
 | Bluetooth (bar, quick panel) | BlueZ on the system D-Bus (the daemon talks to it directly); `rfkill` to unblock a blocked radio |
+| Airplane mode (quick panel) | the radios' switches in `/sys/class/rfkill` to read; `rfkill` (util-linux) to block or unblock the Wi-Fi, Bluetooth and WWAN radios |
 | Battery | UPower on the system D-Bus |
 | Power profile (quick panel) | `power-profiles-daemon` on the system bus to read; `powerprofilesctl` to set |
 | Brightness (OSD, quick panel) | a backlight in `/sys/class/backlight`; `brightnessctl` to change it from the quick panel (the OSD only reads sysfs) |
