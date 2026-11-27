@@ -263,7 +263,7 @@ while other worktrees' headless suites ran on the same machine:
 |---|---:|---|
 | Control center (`alpheus`), at start | PSS 2.5–2.6 MB (2,511–2,561 KB) | `the_control_center_stays_light_through_every_tab`: the real binary in a 120 × 36 pseudo-terminal, the Home tab's first refresh drawn; the tabs' tools are fakes printing the anonymised fixtures |
 | Control center, every tab visited once | PSS 2.7–2.8 MB (2,767–2,781 KB) | Tab eight times, 400 ms each: every tab's refresh asked its fakes (the test checks that the Diag tab's did) |
-| Control center, after 20 more cycles through the tabs | PSS 2.8–2.9 MB (2,809–2,885 KB); anonymous 868 → 972–984 KB | 160 more tab changes; the growth bound reads anonymous memory (+104…+116 KB, bound +1 MB) |
+| Control center, after 20 more cycles through the tabs | PSS 2.8–2.9 MB (2,809–2,885 KB); anonymous 972–984 KB, against 868 KB after every tab was visited (708–712 KB at start) | 160 more tab changes; the growth bound reads anonymous memory from the after-every-tab reading: +104…+116 KB, bound +1 MB |
 | Control center, peak resident size | 5.2 MB (5,292–5,304 KB `VmHWM`) | read just before `q`; the quit is clean (exit 0, the terminal restored) |
 | `alpheus-launch --toggle` | PSS 597–602 KB; peak resident size 2,296 KB | `alpheus_launch_stays_light`, headless sway: sampled every 10 ms while the daemon, stopped for 300 ms, keeps the client waiting for its reply; exit 0 once continued |
 | `alpheus-launch --dmenu`, 300 lines | PSS 643–648 KB; peak resident size 2,276 KB | sampled every 10 ms while it waits on the open menu; exit 1 (cancelled) once `--close` closes it |
@@ -275,4 +275,6 @@ catch a doubling, not a drift; a change to these parts is still compared back to
 base, as for the daemon. The peak is `VmHWM` of the child's own `/proc/<pid>/status`, never
 `ru_maxrss` from wait4, which carries the resident size of the forked copy of the test from
 before the exec. The control center's figures include the Diag tab's journal check, which only
-tries to open `/var/log/journal/*/system.journal`; nothing else of the machine is read.
+tries to open `/var/log/journal/*/system.journal` and reads nothing from it; no other session
+state, tool or bus is touched. The test also asserts that every call the tabs made was one a
+fake answers, so a changed argv cannot measure error screens.
