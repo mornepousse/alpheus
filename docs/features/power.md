@@ -96,7 +96,10 @@ A row of your own never sleeps: a `run` holding `suspend`, `hibernate`, `hybrid-
 anywhere in any argument, in any case, makes `bar.toml` invalid (the defaults then apply, with the
 reason in the log, as for any refused key). So do a tenth row, a name past 24 characters, an icon
 of two characters, an empty `run`, a blank program or a NUL. The message names the row by its
-position (`power.entry 2: …`), never by its name or command.
+position (`power.entry 2: …`), never by its name or command; for a sleep word it names the word
+found (`an argument of run contains "suspend"`). The screens' word is read by its stem `dpm`, so
+an argument merely containing those three letters, a path for instance, is refused too, and the
+message says `"dpm"`.
 
 The menu is 16 cells wide today, as before the rows of your own: a long name (or its question) is
 cut at the menu's edge.

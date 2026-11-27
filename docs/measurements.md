@@ -415,3 +415,15 @@ instead of three: its shm pool and two buffers) and their labels; after the menu
 20 more cycles the branch keeps +60…+72 KB more over its own baseline than the base, within the
 test's bounds (closed ≤ idle + 512 KB, cycled ≤ closed + 128 KB: +8…+12 KB measured). No wake-up
 at rest after the menu, as before: the rows add no timer.
+
+What stays after the menu closes is not the rows, and not the menu's buffers: one diagnostic run
+(release, Task 7's tree, the same binary started twice, with the two rows and without them, smaps
+by mapping) found the same +412…+416 KB held after the close in both, all of it file-backed pages
+the first open faulted in: the binary's code +256 KB, the Nerd Font +128 KB, two shared libraries
++96 KB; the popup's shm pool went back to nothing at the close, and the anonymous
+memory ended at or below its at-rest level (984 → 1,080 open → 972 KB with the rows, 980 → 1,092 →
+972 KB without). Pages of code are faulted in by the 64 KB around each touched page, so how many a
+first open brings in follows where the code it runs lies in the binary, and the branch's binary
+(Tasks 1 to 6 added code) lays it out differently from the base's: that is where the +60…+72 KB
+most likely came from (an attribution from that one run, not proven), and Task 7's measurement
+below, against 78dbea11, shows the same +416 KB held after the close on both sides.

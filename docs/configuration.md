@@ -269,10 +269,12 @@ The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as
 | `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one (stored, not used yet). |
 
 A `run` holding `suspend`, `hibernate`, `hybrid-sleep` or `dpms` anywhere in any argument, in any
-case, makes `bar.toml` invalid: alpheus never handles sleep or the screens' power. The ⏻ button and
+case, makes `bar.toml` invalid: alpheus never handles sleep or the screens' power. The check reads
+the stem `dpm`, so any argument containing it is refused, a path such as `~/dpm-notes/quit` too;
+the message then says `an argument of run contains "dpm"`. The ⏻ button and
 `alpheus-launch --power` exist when any row does, fixed or yours. A message about a row names it
-by its position (`power.entry 2: …`), never by its name or command, and so does the log
-(`power: entry 2`). See [the power menu](features/power.md).
+by its position (`power.entry 2: …`) and the word found, never by its name or command, and so
+does the log (`power: entry 2`). See [the power menu](features/power.md).
 
 ### `[timer]`
 

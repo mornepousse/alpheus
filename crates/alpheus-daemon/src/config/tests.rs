@@ -1326,23 +1326,27 @@ fn power_entries_parse_and_bounds() {
 }
 
 /// A user row whose command names a sleep word, anywhere in any argument and in any case, makes
-/// bar.toml invalid: alpheus never sleeps.
+/// bar.toml invalid: alpheus never sleeps. The message names the word found (the screens' power
+/// stem as `dpm`, so a path holding it is understood), never the argument.
 #[test]
 fn a_power_entry_naming_sleep_makes_bar_toml_invalid() {
-    for run in [
-        "[\"systemctl\", \"Suspend\"]",
-        "[\"sh\", \"-c\", \"sleep 1 && systemctl hibernate\"]",
-        "[\"systemctl\", \"hybrid-sleep\"]",
-        "[\"fake-wm\", \"set-DPM\", \"off\"]",
-        "[\"loginctl\", \"suspend-then-hibernate\"]",
-        "[\"/usr/bin/suspend\"]",
+    for (run, word) in [
+        ("[\"systemctl\", \"Suspend\"]", "suspend"),
+        ("[\"sh\", \"-c\", \"sleep 1 && systemctl hibernate\"]", "hibernate"),
+        ("[\"systemctl\", \"hybrid-sleep\"]", "hybrid-sleep"),
+        ("[\"fake-wm\", \"set-DPM\", \"off\"]", "dpm"),
+        ("[\"fake-run\", \"/home/u/dpm-notes/quit\"]", "dpm"),
+        ("[\"loginctl\", \"suspend-then-hibernate\"]", "suspend"),
+        ("[\"/usr/bin/suspend\"]", "suspend"),
     ] {
         let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
+        let err = BarConfig::from_text(&text).unwrap_err();
         assert_eq!(
-            BarConfig::from_text(&text),
-            Err("power.entry 1: run names suspend, hibernate, hybrid-sleep or a screen power word (alpheus never sleeps)".into()),
+            err,
+            format!("power.entry 1: an argument of run contains \"{word}\" (a row never sleeps nor powers the screens)"),
             "{run}"
         );
+        assert!(!err.contains("fake") && !err.contains("/home"), "never the command: {err}");
     }
     assert!(BarConfig::from_text("[[power.entry]]\nname = \"Suspend\"\nrun = [\"fake-lock\"]\n").is_ok(), "the name is only a label");
 }

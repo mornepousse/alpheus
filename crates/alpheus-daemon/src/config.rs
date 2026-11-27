@@ -1316,10 +1316,10 @@ fn check_power(p: &PowerConfig) -> Result<(), String> {
         if e.run.iter().any(|a| a.contains('\0')) {
             return Err(format!("power.entry {at}: an argument holds a NUL"));
         }
-        if e.run.iter().any(|a| names_sleep(a)) {
-            return Err(format!(
-                "power.entry {at}: run names suspend, hibernate, hybrid-sleep or a screen power word (alpheus never sleeps)"
-            ));
+        // The word found, from the fixed list, and never the argument, which may be a path or a
+        // command naming the user.
+        if let Some(w) = e.run.iter().find_map(|a| sleep_word(a)) {
+            return Err(format!("power.entry {at}: an argument of run contains \"{w}\" (a row never sleeps nor powers the screens)"));
         }
         if e.countdown.is_some_and(|c| c > POWER_COUNTDOWN_MAX) {
             return Err(format!("power.entry {at}: countdown out of range 0 to {POWER_COUNTDOWN_MAX} s"));
@@ -1328,10 +1328,10 @@ fn check_power(p: &PowerConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `arg` holds a sleep word, any case.
-pub fn names_sleep(arg: &str) -> bool {
+/// The first of `POWER_SLEEP_WORDS` that `arg` holds, any case; None when it holds none.
+pub fn sleep_word(arg: &str) -> Option<&'static str> {
     let arg = arg.to_lowercase();
-    POWER_SLEEP_WORDS.iter().any(|w| arg.contains(w))
+    POWER_SLEEP_WORDS.into_iter().find(|w| arg.contains(w))
 }
 
 /// The longest `[timer]` length, in minutes.
