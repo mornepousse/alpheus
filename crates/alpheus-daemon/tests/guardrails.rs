@@ -4301,6 +4301,7 @@ const TOOLS_PURE: &[&str] = &[
     "launcher/tools/panel.rs",
     "launcher/tools/binds/mod.rs",
     "launcher/tools/binds/mango.rs",
+    "launcher/tools/binds/sway.rs",
     "launcher/tools/binds/describe.rs",
 ];
 

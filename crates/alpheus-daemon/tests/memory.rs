@@ -4820,15 +4820,35 @@ fn binds_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn binds_pss_open_and_closed() {
+    binds_cost(false);
+}
+
+/// The same on Sway (the harness's sway is the compositor read), the 100 binds written in Sway's
+/// dialect with a `set` variable.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed_on_sway() {
+    binds_cost(true);
+}
+
+/// `binds_pss_open_and_closed`, on Sway's dialect when `on_sway`, else on Mango's.
+fn binds_cost(on_sway: bool) {
     require_release(cfg!(debug_assertions));
-    let sway = Sway::start("binds-cost", 1);
+    let sway = Sway::start(if on_sway { "binds-cost-sway" } else { "binds-cost" }, 1);
     let mango = FakeMango::start(&sway.runtime);
     let file = sway.runtime.join("binds.conf");
     let mut text = String::from("# Invented key bindings for the memory test.\n");
+    if on_sway {
+        text.push_str("set $mod Mod4\n");
+    }
     for g in 0..5 {
         text.push_str(&format!("# ── Group {g} ──\n"));
         for k in 0..20 {
-            text.push_str(&format!("bind=SUPER+SHIFT,k{g}{k},spawn,foo-term --class tool-{g}-{k} # Open tool {g} {k}\n"));
+            text.push_str(&if on_sway {
+                format!("bindsym $mod+Shift+k{g}{k} exec foo-term --class tool-{g}-{k} # Open tool {g} {k}\n")
+            } else {
+                format!("bind=SUPER+SHIFT,k{g}{k},spawn,foo-term --class tool-{g}-{k} # Open tool {g} {k}\n")
+            });
         }
     }
     std::fs::write(&file, &text).unwrap();
@@ -4841,7 +4861,7 @@ fn binds_pss_open_and_closed() {
         &DaemonOptions {
             bar_toml: Some(AT_REST_NO_RESOURCES),
             launcher_toml: Some(&toml),
-            backend: Backend::Mango(&mango.socket),
+            backend: if on_sway { Backend::Sway } else { Backend::Mango(&mango.socket) },
             ..DaemonOptions::default()
         },
     );

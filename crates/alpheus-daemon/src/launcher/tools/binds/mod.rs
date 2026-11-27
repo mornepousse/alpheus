@@ -4,7 +4,8 @@
 //!
 //! `roots` names the first files (`binds_files`, else the dialect's own config); `load` walks them
 //! breadth-first in file order, each file's includes queued after it, and the dialect's parser
-//! (`mango.rs`) turns each line into a `Bind`. Descriptions and combos come from `describe.rs`.
+//! (`mango.rs`, `sway.rs`) turns each line into a `Bind`. Descriptions and combos come from
+//! `describe.rs`.
 //!
 //! Never:
 //! - read without a bound: MAX_FILES files, MAX_BYTES in all, MAX_BINDS binds, MAX_GROUPS groups,
@@ -16,6 +17,7 @@
 
 pub mod describe;
 mod mango;
+mod sway;
 
 use super::nav::{RowId, ToolRow};
 use super::panel::{Label, PanelRow};
@@ -94,7 +96,8 @@ pub const MAX_VARS: usize = 64;
 pub const MAX_VAR: usize = 128;
 
 /// The files a load starts from: `binds_files` (`~/` expanded from HOME) when any, else the
-/// dialect's config under `$XDG_CONFIG_HOME` (absolute only), else under `~/.config`.
+/// dialect's config under `$XDG_CONFIG_HOME` (absolute only), else under `~/.config`; for Sway,
+/// `/etc/sway/config` after it, read only when the user's is not.
 pub fn roots(dialect: Dialect, var: impl Fn(&str) -> Option<OsString>, binds_files: &[String]) -> Roots {
     let home = var("HOME").map(PathBuf::from).filter(|h| h.is_absolute());
     if !binds_files.is_empty() {
@@ -109,7 +112,12 @@ pub fn roots(dialect: Dialect, var: impl Fn(&str) -> Option<OsString>, binds_fil
         Dialect::Mango => "mango/config.conf",
         Dialect::Sway => "sway/config",
     };
-    Roots::FirstOf(config.map(|c| c.join(file)).into_iter().collect())
+    let mut first: Vec<PathBuf> = config.map(|c| c.join(file)).into_iter().collect();
+    if dialect == Dialect::Sway {
+        // Sway itself falls back to the system's config when the user has none.
+        first.push(PathBuf::from("/etc/sway/config"));
+    }
+    Roots::FirstOf(first)
 }
 
 /// Reads the bindings from `roots` through `files`, within the bounds.
@@ -196,7 +204,7 @@ impl Walk<'_> {
         let here = path.parent().unwrap_or(Path::new("/"));
         let includes = match self.st.dialect {
             Dialect::Mango => mango::parse(&text, here, &mut self.st),
-            Dialect::Sway => Vec::new(),
+            Dialect::Sway => sway::parse(&text, here, &mut self.st, self.files),
         };
         for p in includes {
             self.take(normal(&p));
@@ -244,6 +252,13 @@ impl Parse {
     pub(crate) fn open_group(&mut self, name: String) {
         self.group_name = clean(&name);
         self.group = None;
+    }
+
+    /// Makes `name` the group of the next binds, giving the name of the group it replaces.
+    pub(crate) fn enter_group(&mut self, name: String) -> String {
+        let before = std::mem::take(&mut self.group_name);
+        self.open_group(name);
+        before
     }
 
     /// A line cut to MAX_LINE bytes (counted when cut).

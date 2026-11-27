@@ -55,7 +55,7 @@ fn is_bind(key: &str) -> bool {
 }
 
 /// A value and its trailing `# comment` (a `#` at the start or after a blank), both trimmed.
-fn split_comment(value: &str) -> (&str, Option<&str>) {
+pub(super) fn split_comment(value: &str) -> (&str, Option<&str>) {
     let at = value.char_indices().find(|&(i, c)| c == '#' && (i == 0 || value.get(..i).is_some_and(|v| v.ends_with(char::is_whitespace))));
     match at {
         Some((i, _)) => {

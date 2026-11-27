@@ -169,17 +169,29 @@ was on. Nothing of it is kept once it is left.
   your home folder; a relative one makes `launcher.toml` invalid), else the
   compositor's own config: Mango's `$XDG_CONFIG_HOME/mango/config.conf` (else
   `~/.config/mango/config.conf`), following its `source=` lines (relative to the file that names them,
-  or `~/…`). Sway's config is read but its lines are not listed yet.
-- **What a line becomes:** `bind`, `bindl`, `bindsl` and `bindr` (`MODS,key,function[,args]`) are
+  or `~/…`); Sway's `$XDG_CONFIG_HOME/sway/config` (else `~/.config/sway/config`), and only when
+  that one cannot be read, the system's `/etc/sway/config`, as Sway itself does. Sway's `include`
+  lines are followed (relative to the file that names them, or `~/…`); a `*` or `?` in the last
+  component reads that folder's matching files in name order (hidden ones only for a pattern
+  starting with `.`), within the same 8 files. A pattern before the last component is not followed.
+- **What a line becomes, on Mango:** `bind`, `bindl`, `bindsl` and `bindr` (`MODS,key,function[,args]`) are
   listed; `mousebind`, `axisbind`, `gesturebind` and every other key are skipped silently. `$NAME`
   is replaced when an `env=NAME,value` of the files read defines it, else kept as written.
+- **What a line becomes, on Sway:** `bindsym` and `bindcode` (`[--flags] combo action`, alone or in
+  a `bindsym { … }` block) are listed, their flags (`--release`, `--locked`, `--to-code`, …) skipped
+  over; a `bindcode` key shows as `code:N`. `set $name value` defines a variable the lines after it
+  expand (an undefined one is kept as written). The bindings inside a `bar { … }`, `input { … }` or
+  any other block are skipped; a line ending in `\` goes on with the next.
 - **Groups:** a comment line `# ── Name ──` opens the group `Name`; the binds before any are in
-  `General`. All lists every group as a section, in the order the groups are first met; **Tab** and
+  `General` on Mango, `Default` on Sway. On Sway, the bindings of a `mode "name" { … }` block are
+  the group `name`, and after its `}` the group before goes on. All lists every group as a section, in the order the groups are first met; **Tab** and
   **Shift+Tab** move to one group's own tab and back, wrapping.
 - **Descriptions:** the bind's trailing `# comment`, else the comment line right above it (not across
   a blank line, not a group's header), else the function in words (`spawn,firefox` is
-  `Run firefox`, `view,2` is `Go to desktop 2`, `killclient` is `Close window`; an unknown function
-  shows as written).
+  `Run firefox`, `view,2` is `Go to desktop 2`, `killclient` is `Close window`; on Sway `exec foo`
+  is `Run foo`, `workspace number 3` is `Go to workspace 3`, `move container to workspace number 3`
+  is `Move window to workspace 3`, `kill` is `Close window`, `mode "resize"` is `Enter mode resize`;
+  an unknown function shows as written).
 - **What you see:** in the command panel's box, the search field, a tab strip (`All`, then one tab
   per group; a click opens one as Tab does), the list on the left and the selected binding's card on
   the right. Each binding takes two lines: its combo in a capsule, then its description (the
@@ -307,6 +319,7 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
   `claim_letters`.
 - `binds/`: pure. The Keybindings level's parser (`mod.rs`: `roots`, `load` and its bounds behind the
   `Files` seam, `rows` and `group_hits` for the level's list, `notes` for its log lines; `mango.rs`;
+  `sway.rs`;
   `describe.rs`: combos and the functions in words). `nav.rs` holds the level (`Level::Binds`) and
   the bindings while it is open; `app.rs` is the one file that reads the disk for it (`RealFiles`),
   at once and once per open, on `Outcome::OpenBinds`.

@@ -1,5 +1,5 @@
 //! Tests of the binds parser: Mango's chain of `source=` files, groups, descriptions, `env=`
-//! variables, combos, and every bound. Files come from a `FakeFiles` map; no real file is read.
+//! variables, combos, and every bound; Sway's `set` variables, modes, flags and include globs. Files come from a `FakeFiles` map; no real file is read.
 
 use super::*;
 use std::cell::RefCell;
@@ -323,15 +323,6 @@ fn first_of_reads_the_first_readable_and_each_reads_all() {
 }
 
 #[test]
-fn sway_parses_nothing_yet_but_reads_its_root() {
-    let files = FakeFiles::with(&[("/c/config", "bindsym $mod+a exec x\n")]);
-    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
-    assert!(b.found);
-    assert!(b.binds.is_empty());
-    assert!(!load(Dialect::Sway, &first_of("/c/none"), &files).found);
-}
-
-#[test]
 fn roots_follow_xdg_then_home() {
     assert_eq!(
         roots(Dialect::Mango, vars(&[("XDG_CONFIG_HOME", "/x"), ("HOME", "/h")]), &[]),
@@ -454,4 +445,213 @@ fn the_notes_are_fixed_words_and_counts() {
     let mut said = Vec::new();
     notes(&Binds { not_understood: 0, cut: Cut::default(), ..b }, &mut |m| said.push(m.to_string()));
     assert_eq!(said.len(), 1, "nothing skipped, nothing cut: one line");
+}
+
+fn sway_fixture() -> FakeFiles {
+    FakeFiles::with(&[
+        ("/cfg/sway/config", include_str!("fixtures/sway/config")),
+        ("/cfg/sway/config.d/20-system.conf", include_str!("fixtures/sway/config.d/20-system.conf")),
+        ("/cfg/sway/config.d/10-workspaces.conf", include_str!("fixtures/sway/config.d/10-workspaces.conf")),
+    ])
+}
+
+/// One file `/c/config` holding `text`, loaded as Sway.
+fn sway(text: &str) -> Binds {
+    load(Dialect::Sway, &first_of("/c/config"), &FakeFiles::with(&[("/c/config", text)]))
+}
+
+#[test]
+fn binds_sway_expands_set_variables_and_modes() {
+    let files = sway_fixture();
+    let b = load(Dialect::Sway, &first_of("/cfg/sway/config"), &files);
+    assert!(b.found);
+    assert_eq!(b.files, ["config", "10-workspaces.conf", "20-system.conf"], "the glob's files sorted");
+    let got: Vec<(&str, &str, &str)> = b.binds.iter().map(|x| (x.combo.as_str(), x.description.as_str(), x.command.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("Super+Return", "Run foo-term", "exec foo-term"),
+            ("Super+Shift+Q", "Close window", "kill"),
+            ("Alt+Ctrl+T", "Second terminal", "exec foo-term --hold"),
+            ("Super+H", "Focus the window on the left", "focus left"),
+            ("Super+Shift+space", "Toggle floating", "floating toggle"),
+            ("H", "Resize shrink width 10px", "resize shrink width 10px"),
+            ("Return", "Enter mode default", "mode \"default\""),
+            ("Super+R", "Enter mode resize", "mode \"resize\""),
+            ("Super+1", "Go to workspace 1", "workspace number 1"),
+            ("Super+Shift+1", "Move window to workspace 1", "move container to workspace number 1"),
+            ("XF86AudioMute", "Run mute-toggle", "exec mute-toggle"),
+            ("Super+code:38", "Run foo", "exec foo"),
+            ("Super+Shift+C", "Reload configuration", "reload"),
+        ]
+    );
+    assert_eq!(b.groups, ["Default", "Focus", "resize"]);
+    let groups: Vec<usize> = b.binds.iter().map(|x| x.group).collect();
+    assert_eq!(
+        groups,
+        [0, 0, 0, 1, 1, 2, 2, 1, 0, 0, 0, 0, 0],
+        "the mode's binds in its group; after `}}` the group before; a new file Default"
+    );
+    let from: Vec<usize> = b.binds.iter().map(|x| x.file).collect();
+    assert_eq!(from, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2]);
+    assert_eq!(b.not_understood, 0, "the bar's bindsym and the other keys are skipped silently");
+    assert_eq!(b.cut, Cut::default());
+
+    // A variable's value expands the variables before it; an undefined one stays.
+    let b = sway("set $a foo\nset $b $a-bar\nbindsym Mod4+x exec $b $nope\n");
+    assert_eq!(b.binds[0].command, "exec foo-bar $nope");
+    // `set` variables are bounded as Mango's `env=` are.
+    let mut text: String = (0..70).map(|i| format!("set $v{i} x{i}\n")).collect();
+    text.push_str("bindsym Mod4+x exec $v0 $v63 $v64\n");
+    let b = sway(&text);
+    assert_eq!((b.binds[0].command.as_str(), b.cut.vars), ("exec x0 x63 $v64", 70 - MAX_VARS));
+}
+
+#[test]
+fn sway_flags_are_skipped() {
+    let b = sway(
+        "set $mod Mod4\nbindsym --release --locked $mod+x exec foo\nbindsym --to-code --input-device=1:2:kbd --no-repeat Control+y kill\n",
+    );
+    assert_eq!(
+        (b.binds[0].combo.as_str(), b.binds[0].command.as_str(), b.binds[0].description.as_str()),
+        ("Super+X", "exec foo", "Run foo")
+    );
+    assert_eq!((b.binds[1].combo.as_str(), b.binds[1].command.as_str()), ("Ctrl+Y", "kill"));
+    // A bind short of a combo or a command is counted.
+    let b = sway("bindsym\nbindsym --locked\nbindsym Mod4+x\nbindsym Mod4+y kill\n");
+    assert_eq!((b.binds.len(), b.not_understood), (1, 3));
+}
+
+#[test]
+fn bindcode_keeps_its_code() {
+    let b = sway("set $mod Mod4\nbindcode $mod+38 exec foo\nbindcode --release 9 kill\nbindcode Mod1+Shift+24 floating toggle\n");
+    let combos: Vec<&str> = b.binds.iter().map(|x| x.combo.as_str()).collect();
+    assert_eq!(combos, ["Super+code:38", "code:9", "Alt+Shift+code:24"]);
+}
+
+#[test]
+fn sway_blocks_continuations_and_bar_binds() {
+    let b = sway(
+        "bindsym --locked {\n  Mod4+a exec a\n  Mod4+b exec b\n}\n\
+         input * {\n  xkb_layout us\n  bindsym Mod4+no exec no\n}\n\
+         bar {\n  colors {\n    background #000000\n  }\n  bindsym button4 workspace next\n}\n\
+         mode \"x\" {\n  bindsym {\n    a exec in-x\n  }\n  bindsym b exec also-x\n}\n\
+         bindsym Mod4+c exec one \\\n    two\n",
+    );
+    let got: Vec<(&str, &str)> = b.binds.iter().map(|x| (x.combo.as_str(), x.command.as_str())).collect();
+    assert_eq!(got, [("Super+A", "exec a"), ("Super+B", "exec b"), ("A", "exec in-x"), ("B", "exec also-x"), ("Super+C", "exec one two")]);
+    let groups: Vec<&str> = b.binds.iter().map(|x| b.groups[x.group].as_str()).collect();
+    assert_eq!(groups, ["Default", "Default", "x", "x", "Default"], "a bindsym block inside a mode does not close it");
+    assert_eq!(b.not_understood, 0);
+
+    // A stray `}` and deep nesting stay bounded and harmless.
+    let deep = format!("}}\n{}{}bindsym Mod4+z kill\n", "foo {\n".repeat(5000), "}\n".repeat(5000));
+    let b = sway(&deep);
+    assert_eq!(b.binds.len(), 1);
+}
+
+#[test]
+fn sway_include_glob_and_cycle_are_bounded() {
+    // `include config.d/*` reads the folder sorted, skipping hidden files; `*.conf` filters; a
+    // self-include (and the root named again by a glob) is read once.
+    let files = FakeFiles::with(&[
+        ("/c/config", "include config.d/*\ninclude ./config\ninclude /c/./config\ninclude more/*.conf\ninclude ./*\nbindsym Mod4+r kill\n"),
+        ("/c/config.d/b", "bindsym Mod4+b kill\n"),
+        ("/c/config.d/a", "bindsym Mod4+a kill\n"),
+        ("/c/config.d/.hidden", "bindsym Mod4+h kill\n"),
+        ("/c/more/x.conf", "bindsym Mod4+x kill\n"),
+        ("/c/more/y.txt", "bindsym Mod4+y kill\n"),
+    ]);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!(b.files, ["config", "a", "b", "x.conf"]);
+    assert_eq!(files.reads("/c/config"), 1);
+    assert_eq!((files.reads("/c/config.d/.hidden"), files.reads("/c/more/y.txt")), (0, 0));
+    assert_eq!(b.cut, Cut::default());
+
+    // A glob of twelve files: eight files read in all, the rest counted.
+    let texts: Vec<(String, String)> = (10..22).map(|i| (format!("/c/d/{i}.conf"), format!("bindsym Mod4+{i} kill\n"))).collect();
+    let mut pairs: Vec<(&str, &str)> = texts.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    pairs.push(("/c/config", "include d/*\n"));
+    let files = FakeFiles::with(&pairs);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!((files.total_reads(), b.files.len(), b.cut.files), (MAX_FILES, MAX_FILES, 12 + 1 - MAX_FILES));
+    assert_eq!(b.files[1], "10.conf", "the first by name");
+
+    // A `*` before the last component is not followed.
+    let files = FakeFiles::with(&[("/c/config", "include */x.conf\n"), ("/c/a/x.conf", "bindsym Mod4+x kill\n")]);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!((files.reads("/c/a/x.conf"), b.not_understood), (0, 1));
+
+    // A variable in an include expands; `~` is left to the glue.
+    let files = FakeFiles::with(&[("/c/config", "set $d /c/inc\ninclude $d/one\ninclude ~/two\n"), ("/c/inc/one", "")]);
+    load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!((files.reads("/c/inc/one"), files.reads("~/two")), (1, 1));
+}
+
+#[test]
+fn the_etc_fallback_is_used_only_without_a_user_config() {
+    let r = roots(Dialect::Sway, vars(&[("HOME", "/h")]), &[]);
+    assert_eq!(r, Roots::FirstOf(vec![PathBuf::from("/h/.config/sway/config"), PathBuf::from("/etc/sway/config")]));
+    assert_eq!(
+        roots(Dialect::Sway, vars(&[("XDG_CONFIG_HOME", "/x"), ("HOME", "/h")]), &[]),
+        Roots::FirstOf(vec![PathBuf::from("/x/sway/config"), PathBuf::from("/etc/sway/config")])
+    );
+    assert_eq!(roots(Dialect::Sway, vars(&[]), &[]), Roots::FirstOf(vec![PathBuf::from("/etc/sway/config")]));
+    assert_eq!(roots(Dialect::Sway, vars(&[("HOME", "/h")]), &["/k".to_string()]), Roots::Each(vec![PathBuf::from("/k")]));
+    assert_eq!(roots(Dialect::Mango, vars(&[]), &[]), Roots::FirstOf(Vec::new()), "Mango has no system fallback");
+
+    let etc = [
+        ("/etc/sway/config", "include /etc/sway/config.d/*\nbindsym Mod4+e kill\n"),
+        ("/etc/sway/config.d/nixos.conf", "bindsym Mod4+n kill\n"),
+    ];
+    let mut both = etc.to_vec();
+    both.push(("/h/.config/sway/config", "bindsym Mod4+u kill\n"));
+    let files = FakeFiles::with(&both);
+    let b = load(Dialect::Sway, &r, &files);
+    assert_eq!(b.files, ["config"]);
+    assert_eq!(b.binds[0].combo, "Super+U");
+    assert_eq!(files.reads("/etc/sway/config"), 0, "the user's config found: /etc never read");
+
+    let files = FakeFiles::with(&etc);
+    let b = load(Dialect::Sway, &r, &files);
+    assert!(b.found);
+    assert_eq!(b.files, ["config", "nixos.conf"]);
+    let combos: Vec<&str> = b.binds.iter().map(|x| x.combo.as_str()).collect();
+    assert_eq!(combos, ["Super+E", "Super+N"]);
+}
+
+#[test]
+fn sway_humanised_table() {
+    let s = Dialect::Sway;
+    for (function, args, want) in [
+        ("exec", "foo --bar", "Run foo --bar"),
+        ("exec_always", "foo", "Run foo"),
+        ("exec", "--no-startup-id foo", "Run foo"),
+        ("workspace", "number 3", "Go to workspace 3"),
+        ("workspace", "3", "Go to workspace 3"),
+        ("workspace", "next", "Go to workspace next"),
+        ("move", "container to workspace number 3", "Move window to workspace 3"),
+        ("move", "window to workspace 3", "Move window to workspace 3"),
+        ("move", "to workspace number 4", "Move window to workspace 4"),
+        ("move", "left", "Move window left"),
+        ("move", "scratchpad", "Move window to the scratchpad"),
+        ("scratchpad", "show", "Show the scratchpad"),
+        ("kill", "", "Close window"),
+        ("focus", "left", "Focus left"),
+        ("fullscreen", "toggle", "Toggle fullscreen"),
+        ("fullscreen", "", "Toggle fullscreen"),
+        ("floating", "toggle", "Toggle floating"),
+        ("sticky", "toggle", "Toggle sticky"),
+        ("layout", "tabbed", "Set layout tabbed"),
+        ("splith", "", "Split horizontally"),
+        ("splitv", "", "Split vertically"),
+        ("resize", "grow width 10px", "Resize grow width 10px"),
+        ("reload", "", "Reload configuration"),
+        ("exit", "", "Quit Sway"),
+        ("mode", "\"resize\"", "Enter mode resize"),
+        ("mode", "resize", "Enter mode resize"),
+        ("fancy", "x y", "fancy x y"),
+    ] {
+        assert_eq!(describe::humanise(s, function, args), want, "{function} {args}");
+    }
 }

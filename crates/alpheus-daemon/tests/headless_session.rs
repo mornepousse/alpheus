@@ -553,6 +553,47 @@ fn tools_opens_with_no_scan_and_toggles() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// The Keybindings level on the harness's own Sway: `binds_files` names an invented config in the
+/// test's runtime folder (a `set` variable, a mode, an include glob); `/keybindings` and Enter open
+/// the level and the log counts the fixture's binds and groups; the binds' `exec` names a recorder
+/// on the private `PATH` that never runs; Esc goes back to the panel, a second Esc closes the box.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn binds_on_sway_lists_the_fixture() {
+    let sway = Sway::start("binds-sway", 1);
+    fake_recorder(&sway, "fake-binds");
+    let dir = sway.runtime.join("sway-binds");
+    std::fs::create_dir_all(dir.join("binds.d")).unwrap();
+    let config = dir.join("config");
+    std::fs::write(
+        &config,
+        "# Invented Sway bindings for the headless test.\nset $mod Mod4\nset $rec fake-binds\n\
+         bindsym $mod+Return exec $rec one\nbindsym --locked $mod+Shift+q kill\n\
+         mode \"resize\" {\n    bindsym h resize shrink width 10px\n    bindsym Escape mode \"default\"\n}\n\
+         bindsym $mod+r mode \"resize\"\ninclude ./binds.d/*\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("binds.d/a.conf"), "# ── Workspaces ──\nbindsym $mod+1 workspace number 1\nbindcode $mod+10 exec $rec two\n")
+        .unwrap();
+    let toml = format!("[tools]\nbinds_files = [{:?}]\n", config.display().to_string());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    let typing =
+        wtype_spawn(&sway, &["-s", "300", "/keybindings", "-k", "Return", "-s", "1500", "-k", "Escape", "-s", "1500", "-k", "Escape"]);
+    assert!(d.wait_for("tools: binds shown (7 binds, 3 groups)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(d.count("launcher closed ("), 0, "the first Esc goes back to the panel: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let log = d.log();
+    assert!(recorded(&sway, "fake-binds").is_empty(), "a listed bind never runs: {log:?}");
+    assert!(!log.iter().any(|l| l.contains("tools: binds cut") || l.contains("not understood")), "{log:?}");
+    assert!(log.iter().all(|l| !l.contains("fake-binds") && !l.contains("Super+")), "never a bind: {log:?}");
+}
+
 /// A category, an entry with fixed choices and `run = [rec, "fixed", "{choice}"]`: the argv the
 /// recorder gets is one element per line, the choice whole (`a b`, `it's "q"`), never split or quoted.
 #[test]
