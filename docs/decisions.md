@@ -2177,11 +2177,13 @@ Date: 2026-11-27 · Source: tests `sway_writes_only_its_messages`, `compositor_r
 ### An OSD kind is opt-in and brings the source it reads
 
 `[osd] kinds` lists the pills that show. The three levels (`volume`, `mic`, `brightness`) are on by
-default, as before; the passive kinds (`bluetooth`, `dnd`, `profile`, and `layout` and `track`
-next) are opt-in, so a pill at every Bluetooth or profile change is something the user asked for.
+default, as before; the passive kinds (`bluetooth`, `dnd`, `profile`, `layout` and `track`) are
+opt-in, so a pill at every Bluetooth or profile change is something the user asked for.
 A kind brings the source it reads, as the module brought `pw-dump` (`OsdKind::needs`, added by
 `modules::needs_of` only with `osd` in `modules`): `bluetooth` the BlueZ domain, `profile`
-power-profiles-daemon, `volume` and `mic` `pw-dump` and its OSD scope. A list without `volume` and
+power-profiles-daemon, `volume` and `mic` `pw-dump` and its OSD scope, `layout` the compositor's
+layout (`Needs::KEYBOARD`; under Sway, `GET_INPUTS` and the input and mode events), `track` the
+MPRIS players. No log line names a layout, a title or an artist. A list without `volume` and
 `mic` therefore starts no `pw-dump` for the OSD, and without `brightness` the verb shows nothing.
 `dnd` brings nothing and needs the `notifications` module instead: the flag is the server's, and
 alpheus must hold the notification name for it to mean anything, so a `dnd` kind without the module

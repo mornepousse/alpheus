@@ -434,7 +434,7 @@ width = 32           # cells of its row (24 to 60)
 margin = 48          # px above the bottom edge (0 to 400)
 backlight = ""       # a device in backlight_dir; "": the first one, in sorted order
 backlight_dir = "/sys/class/backlight"   # read only: on `alpheus-launch --osd brightness` and when the quick panel opens
-kinds = ["volume", "mic", "brightness"]  # also "bluetooth", "dnd" (needs "notifications"), "profile"; each brings its source
+kinds = ["volume", "mic", "brightness"]  # also "bluetooth", "dnd" (needs "notifications"), "profile", "layout", "track"; each brings its source
 
 [quick]
 step = 5                                   # % per ←/→ or wheel notch on a slider (1 to 25)

@@ -57,10 +57,10 @@ struct Monitor {
     active_tags: Vec<i64>,
     #[serde(default)]
     active_client: Option<ActiveClient>,
-    /// The bind mode ("default"); read only with `Model::keyboard`.
+    /// The bind mode ("default"); published only with `Model::keyboard`.
     #[serde(default)]
     keymode: Option<String>,
-    /// The layout's name ("English (US)"); read only with `Model::keyboard`.
+    /// The layout's name ("English (US)"); published only with `Model::keyboard`.
     #[serde(default)]
     keyboardlayout: Option<String>,
 }

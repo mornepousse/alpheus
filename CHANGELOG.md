@@ -26,7 +26,6 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   [Page](docs/features/resources.md),
   [configuration](docs/configuration.md#resources),
   [decisions](docs/decisions.md#a-gpus-usage-is-read-without-keeping-it-awake).
-
 - **Keyboard layout module** (27): the opt-in `keyboard` module shows `󰌌 us`, the layout the
   compositor reports (Mango's monitor snapshot, Sway's inputs), and the bind mode in the accent
   when it is not `default`; `[keyboard] short` and `show_mode`. Display only: no lock keys, nothing
@@ -41,7 +40,7 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   `profile` (the power profile), `layout` (the keyboard layout's full name) and `track` (a new
   title while the player plays). Each kind starts only the source it reads, and a hook fed by that
   source fires and is not reported as never firing. The pills never log a name, a layout or a
-  title. The branch with the keyboard module, against main: +44 KiB stripped, at start
+  title. The branch with the keyboard module, against 51ced748: +44 KiB stripped, at start
   +40…+48 KB (`everything`) and +172 KB (`bar only`), all the binary's file pages; 0 wake-ups at
   rest under Sway and Mango.
   [Page](docs/features/osd.md#what-it-does),
