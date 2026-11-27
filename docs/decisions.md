@@ -2150,7 +2150,8 @@ parsed, the active monitor's), and Sway's IPC on the connections already open. N
 (its events reach only the focused surface, and the bar never has focus), never evdev or
 `/dev/input` (a key-logger by shape), never a `watch keyboardlayout` child of Mango's command-line
 client (a resident process for one field). The fields are read only when a module asks
-(`Needs::KEYBOARD`): otherwise a layout switch changes no published state and wakes nothing. The
+(`Needs::KEYBOARD`): otherwise a layout switch changes no published state: the compositor thread still reads the
+snapshot, but it publishes nothing, so the main loop does not wake. The
 Caps Lock and Num Lock indicators are left out: no source is both event-driven and private without
 keyboard focus (see the spec).
 

@@ -99,7 +99,8 @@ pub struct Model {
     /// Ids that had focus, oldest first, the most recent last; only ids of the last snapshot.
     mru: Vec<u64>,
     /// The keyboard is wanted: `state` carries the layout and the mode. Off, a layout switch
-    /// changes no state, so nothing is published and the loop does not wake.
+    /// changes no state: the compositor thread still reads and parses the snapshot, but it
+    /// publishes nothing, so the main loop does not wake.
     keyboard: bool,
 }
 
