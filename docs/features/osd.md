@@ -208,3 +208,8 @@ method):
 - **Passive kinds:** three of them on keep 0 to 4 KB of anonymous memory (`osd_kinds_pss_off_and_on`);
   a kind that brings a source costs that source (the `bluetooth` kind alone: the BlueZ domain and
   the D-Bus thread, `+ osd kinds` in `startup_pss_per_source`). The kinds' code: +16 KiB stripped.
+- **The kinds and keyboard branch as a whole** (against main, 3 pairings): +44 KiB stripped; at
+  start `everything` +40…+48 KB and `bar only` +172 KB, all of it the binary's file pages
+  (`Pss_Anon` −4…+4 KB); the default kinds take no new path. The `layout` and `track` kinds alone
+  were +72…+80 KB of file pages at start, +4 KiB stripped. 0 compositor-thread wake-ups at rest
+  under Sway and Mango.

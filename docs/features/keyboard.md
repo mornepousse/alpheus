@@ -157,3 +157,8 @@ Measured in release, back to back with the version before it (the full table is 
   sends what it sent before.
 - **Wake-ups:** none at rest once a change is drawn, under Mango and under Sway
   (`at_rest_no_wakeups_with_the_keyboard_module`).
+- **At start, with the rest of the bar** (`+ keyboard` in `startup_pss_per_source`, Sway): 10,092 KB
+  in each of three runs, +0…+4 KB over the same bar without the module.
+- **The branch as a whole** (the keyboard module and the OSD kinds, against main, 3 pairings):
+  +44 KiB stripped; at start `everything` +40…+48 KB and `bar only` +172 KB, all of it the binary's
+  file pages (`Pss_Anon` −4…+4 KB).
