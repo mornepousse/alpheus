@@ -6574,6 +6574,36 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
+/// `--power` opens the menu (Lock, Log out, Reboot, Power off, then one user row, the fifth); the
+/// key `5` runs that row's `run` through its fake recorder on the daemon's private PATH, exactly
+/// once, and the menu closes; no other row's command runs.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_a_digit_runs_a_user_row() {
+    let sway = Sway::start("power-digit", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    for program in ["loginctl", "systemctl", "fake-quit"] {
+        fake_recorder(&sway, program);
+    }
+    let bar = "modules = [\"power\"]\n[quick]\nlogout = [\"loginctl\", \"terminate-user\", \"u\"]\n\
+               [[power.entry]]\nname = \"Quit\"\nrun = [\"fake-quit\", \"--now\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for("power menu shown (lock logout reboot poweroff entry 1)", DELAY), "{:?}", d.log());
+    power_verb_drawn(&sway, &d);
+    keys(&sway, &["5"]);
+    assert!(wait_for_call(&sway, "fake-quit", "fake-quit --now"), "{:?} {:?}", recorded(&sway, "fake-quit"), d.log());
+    assert!(d.wait_for("power: entry 1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // a second run would have landed by now
+    assert_eq!(recorded(&sway, "fake-quit"), ["fake-quit --now"], "once: {:?}", d.log());
+    assert!(recorded(&sway, "loginctl").is_empty() && recorded(&sway, "systemctl").is_empty(), "nothing else ran");
+}
+
 /// Two requests on two connections, both written before either reply is read: the daemon gets the
 /// second right behind the first, with no timing between them.
 fn launcher_pair(sway: &Sway, a: &Request, b: &Request) -> (Reply, Reply) {

@@ -23,16 +23,19 @@
 //! held key repeats only to move, in the power menu").
 
 use crate::config::BarConfig;
-use crate::grid::{Grid, Style};
+use crate::grid::{Grid, Style, Tint, text_width};
 use crate::keys::Key;
-use crate::list::{self, Boxed, Row};
+use crate::list::{self, Boxed, Row, Shape, ShapeKind};
 use crate::session::{self, Activation, Session};
 use std::borrow::Cow;
 use std::time::Instant;
 
-/// A row's cells, its pad cell at each end included: the longest built-in text, "⏻ Power off? ⏎"
-/// (14 cells), and the two pads. A longer user row is cut at it.
-pub const WIDTH: u16 = 16;
+/// The rows that carry a digit capsule: 1 to 9, the keys that pick them.
+pub const DIGITS: usize = 9;
+
+/// What a digit adds to a row's cells, past its text's trailing blank: a gap outside the
+/// selection band, then the capsule's three cells (blank, digit, blank).
+const CAPSULE: u16 = 4;
 
 /// The glyph of a user row without an `icon`.
 pub const USER_GLYPH: char = '•';
@@ -90,6 +93,19 @@ impl PowerRow {
     /// The question while it waits for its second activation, drawn in warn: "󰜉 Reboot? ⏎".
     fn question(&self) -> String {
         format!("{} {}? ⏎", self.glyph, self.label)
+    }
+
+    /// The cells its longest text takes: the glyph, a space and the label; its question when it
+    /// asks; its countdown's line ("⏻ Power off in 30 s · Esc") when it has one.
+    fn text_cells(&self) -> u16 {
+        let mut cells = text_width(&format!("{} {}", self.glyph, self.label));
+        if self.asks {
+            cells = cells.max(text_width(&self.question()));
+        }
+        if self.countdown > 0 {
+            cells = cells.max(text_width(&format!("{} {} in {} s · Esc", self.glyph, self.label, self.countdown)));
+        }
+        cells
     }
 }
 
@@ -196,14 +212,28 @@ impl Power {
         }
     }
 
-    /// A key: ↑ ↓ Tab Shift+Tab (and Ctrl+P, Ctrl+N) move, Enter and Space activate, Escape closes.
-    /// Any key but Enter and Space cancels the question. `repeat` is true for the keyboard's
-    /// auto-repeat, which only the moves follow (see docs/decisions.md, "A held key repeats only to
-    /// move, in the power menu").
+    /// A key: ↑ ↓ Tab Shift+Tab (and Ctrl+P, Ctrl+N) move, Enter and Space activate, Escape closes,
+    /// a digit 1 to 9 selects its row and activates it (the same digit again confirms a row that
+    /// asks). Any other key cancels the question. `repeat` is true for the keyboard's auto-repeat,
+    /// which only the moves follow (see docs/decisions.md, "A held key repeats only to move, in the
+    /// power menu", "A digit picks a power row, and the same digit confirms").
     pub fn key(&mut self, k: Key, repeat: bool, now: Instant) -> PowerAction {
         let moves = matches!(k, Key::Up | Key::Down | Key::Tab | Key::BackTab | Key::CtrlP | Key::CtrlN);
         if repeat && !moves {
             return PowerAction::Nothing;
+        }
+        // A digit on a row: that row's own activation. Moving onto it drops another row's question
+        // (`select`); the same row's question stays for its confirming press. Past the rows, a
+        // digit is any other key.
+        if let Key::Char(c @ '1'..='9') = k {
+            let i = usize::from(c as u8 - b'1');
+            if i < self.rows.len() {
+                let moved = self.select(i);
+                return match self.activate(i, now) {
+                    PowerAction::Nothing => moved,
+                    action => action,
+                };
+            }
         }
         // A key that is not an activation drops the question; `cancelled` remembers that one was
         // pending, so the row is drawn plain again even when the key itself changes nothing else.
@@ -261,18 +291,35 @@ impl Power {
         if session::expire(&mut self.question, now) { PowerAction::Redraw } else { PowerAction::Nothing }
     }
 
-    /// The rows, `WIDTH` cells wide, drawn inside `list::boxed`'s ring as the tray menus are: the
+    /// The menu's cells across, the same in every state so the popup keeps its size: the longest
+    /// row's text (`PowerRow::text_cells`: its label, question or countdown line) after a pad
+    /// cell and before a blank (both on the selection band), then the digit's gap and capsule (the
+    /// first row always has one) and the pad at the right edge.
+    pub fn width(&self) -> u16 {
+        let text = self.rows.iter().map(PowerRow::text_cells).max().unwrap_or(0);
+        1 + text + 1 + CAPSULE + 1
+    }
+
+    /// The rows, `width()` cells wide, drawn inside `list::boxed`'s ring as the tray menus are: the
     /// glyph in the accent then the label; the selection on a band; the row asking, its question
-    /// in the warning colour instead, with no band.
+    /// in the warning colour instead, with no band. Rows 1 to 9 end with their digit, dim, in a
+    /// capsule (`ShapeKind::Chip(Tint::Pill)`, painted under the cells by `paint_boxed`) outside
+    /// the band, one pad cell from the edge.
     pub fn render(&self) -> Boxed {
-        let columns = WIDTH + 2;
+        let columns = self.width() + 2;
+        // In the ring's coordinates: the band and the text end before the gap; the capsule's three
+        // cells follow the gap; then the pad and the ring's column.
+        let band_end = columns.saturating_sub(1 + CAPSULE + 1);
+        let capsule_at = band_end + 1;
         let mut out = vec![Grid::empty(columns)];
+        let mut shapes = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             let mut g = Grid::empty(columns);
+            let end = if i < DIGITS { band_end } else { columns - 1 };
             match self.question {
                 // The `if` after the pattern: only the row that asked shows its question.
                 Some((asking, _)) if asking == r.entry => {
-                    g.write(2, columns - 1, &r.question(), Style::WARN);
+                    g.write(2, end, &r.question(), Style::WARN);
                 }
                 _ => {
                     let row = Row {
@@ -283,13 +330,21 @@ impl Power {
                         style: Style::NORMAL,
                         selected: self.selected == Some(i),
                     };
-                    list::row(&mut g, 1, columns - 1, &row);
+                    list::row(&mut g, 1, end, &row);
                 }
+            }
+            // `char::from_digit` gives Some for 1 to 9, the rows that have a digit.
+            if let Some(d) = char::from_digit(i as u32 + 1, 10).filter(|_| i < DIGITS) {
+                g.write(capsule_at + 1, capsule_at + 2, &d.to_string(), Style::MUTED);
+                // `boxed` drops the ring's top row and left column: the shape is in its coordinates.
+                shapes.push(Shape { row: i, col: capsule_at - 1, width: 3, rows: 1, kind: ShapeKind::Chip(Tint::Pill), glyph: None });
             }
             out.push(g);
         }
         out.push(Grid::empty(columns));
-        list::boxed(&out, &[], None)
+        let mut b = list::boxed(&out, &[], None);
+        b.shapes = shapes;
+        b
     }
 
     /// For the log line "power menu shown (…)": the fixed rows by their `[quick]` key, the user
@@ -318,9 +373,10 @@ mod tests {
         c
     }
 
-    /// The text of each row, without its trailing blanks.
+    /// The text of each row, without its trailing blanks nor its capsule's digit (no label of
+    /// these tests ends with a digit).
     fn row_texts(b: &Boxed) -> Vec<String> {
-        b.rows.iter().map(|g| g.text().trim_end().to_string()).collect()
+        b.rows.iter().map(|g| g.text().trim_end().trim_end_matches(|c: char| c.is_ascii_digit()).trim_end().to_string()).collect()
     }
 
     /// The rows' entries, top to bottom.
@@ -455,7 +511,7 @@ mod tests {
             assert_eq!(entries(&p), want.iter().copied().map(PowerEntry::Session).collect::<Vec<_>>(), "mask {mask:04b}");
             assert_eq!(any_rows(&c), mask != 0, "mask {mask:04b}");
             let b = p.render();
-            assert_eq!(b.cells(), (WIDTH, want.len() as u16), "mask {mask:04b}");
+            assert_eq!(b.cells(), (p.width(), want.len() as u16), "mask {mask:04b}");
             for (row, s) in row_texts(&b).iter().zip(&want) {
                 assert_eq!(*row, format!(" {} {}", s.glyph(), s.prompt()), "mask {mask:04b}");
             }
@@ -482,7 +538,9 @@ mod tests {
         assert_eq!(p.selected, Some(3), "↑ from nothing: the last");
         assert_eq!(p.key(Key::Escape, false, t), PowerAction::Close);
         let b = p.render();
-        assert_eq!(b.rows[3].styles(), "S".repeat(usize::from(WIDTH)), "the selection band across the row");
+        let w = usize::from(p.width());
+        assert_eq!(b.rows[3].styles()[..w - 5], "S".repeat(w - 5), "the selection band across the row up to its capsule");
+        assert_eq!(&b.rows[3].styles()[w - 5..], "..m..", "the gap, the capsule and the pad stay off the band (the digit muted)");
         assert_eq!(&b.rows[0].styles()[1..2], "a", "the glyph in the accent");
     }
 
@@ -604,5 +662,134 @@ mod tests {
         assert_eq!(p.press(2, t), PowerAction::Redraw, "a press on power off asks");
         assert_eq!(p.selected, Some(2), "and selects its row");
         assert_eq!(p.press(0, t), PowerAction::RunAndClose(PowerEntry::Session(Session::Lock)), "a left press activates");
+    }
+
+    /// A digit key, pressed (not held).
+    fn digit(p: &mut Power, d: char, at: Instant) -> PowerAction {
+        p.key(Key::Char(d), false, at)
+    }
+
+    /// `1` on Lock, which does not ask: it runs at once, from nothing selected.
+    #[test]
+    fn a_digit_runs_a_row_that_does_not_ask() {
+        let t = Instant::now();
+        let mut p = Power::new(&BarConfig::default()).unwrap();
+        assert_eq!(digit(&mut p, '1', t), PowerAction::RunAndClose(PowerEntry::Session(Session::Lock)));
+        let mut p = Power::new(&with_rows(vec![user("Quit", false)])).unwrap();
+        assert_eq!(digit(&mut p, '4', t), PowerAction::RunAndClose(PowerEntry::User(0)), "a user row by its digit");
+    }
+
+    /// `3` on Reboot asks and selects it; the same digit 0.1 s later does nothing, 0.4 s later runs
+    /// it; another digit asks its own row's question, never confirms the first.
+    #[test]
+    fn a_digit_on_a_row_that_asks_needs_the_same_digit_again() {
+        let t = Instant::now();
+        let reboot = PowerEntry::Session(Session::Reboot);
+        let mut p = Power::new(&all_four_commands_set()).unwrap();
+        assert_eq!(digit(&mut p, '3', t), PowerAction::Redraw, "the first press asks");
+        assert_eq!((p.selected, p.question), (Some(2), Some((reboot, t + CONFIRM))));
+        assert_eq!(digit(&mut p, '3', t + Duration::from_millis(100)), PowerAction::Nothing, "a quick second press never confirms");
+        assert_eq!(p.question, Some((reboot, t + CONFIRM)), "the question stays, its 3 s unchanged");
+        assert_eq!(digit(&mut p, '3', t + CONFIRM_AFTER), PowerAction::RunAndClose(reboot), "0.4 s on: it runs");
+        let mut p = Power::new(&all_four_commands_set()).unwrap();
+        digit(&mut p, '3', t);
+        let later = t + Duration::from_millis(500);
+        assert_eq!(digit(&mut p, '4', later), PowerAction::Redraw, "another digit asks its own row");
+        assert_eq!((p.selected, p.question), (Some(3), Some((PowerEntry::Session(Session::Poweroff), later + CONFIRM))));
+        // Enter confirms the question a digit asked, as for a press.
+        assert_eq!(p.key(Key::Enter, false, later + CONFIRM_AFTER), PowerAction::RunAndClose(PowerEntry::Session(Session::Poweroff)));
+        // Escape still closes, its question gone with it.
+        let mut p = Power::new(&all_four_commands_set()).unwrap();
+        digit(&mut p, '4', t);
+        assert_eq!(p.key(Key::Escape, false, t), PowerAction::Close);
+    }
+
+    /// A digit past the rows, and `0`, do nothing (and drop a pending question, as any other key).
+    #[test]
+    fn a_digit_past_the_rows_does_nothing() {
+        let t = Instant::now();
+        let mut p = Power::new(&BarConfig::default()).unwrap();
+        for d in ['4', '9', '0'] {
+            assert_eq!(digit(&mut p, d, t), PowerAction::Nothing, "{d}");
+        }
+        assert_eq!((p.selected, p.question), (None, None));
+        digit(&mut p, '3', t);
+        assert!(p.question.is_some());
+        assert_eq!(digit(&mut p, '7', t + CONFIRM_AFTER), PowerAction::Redraw, "past the rows: the question dropped");
+        assert_eq!(p.question, None);
+    }
+
+    /// A held digit never acts: neither the first activation nor the confirming one.
+    #[test]
+    fn a_held_digit_never_acts() {
+        let t = Instant::now();
+        let mut p = Power::new(&BarConfig::default()).unwrap();
+        assert_eq!(p.key(Key::Char('1'), true, t), PowerAction::Nothing, "a held 1 never locks");
+        assert_eq!(p.key(Key::Char('3'), true, t), PowerAction::Nothing, "nor asks");
+        assert_eq!((p.selected, p.question), (None, None));
+        digit(&mut p, '3', t);
+        assert_eq!(p.key(Key::Char('3'), true, t + CONFIRM_AFTER), PowerAction::Nothing, "the repeat never confirms");
+        assert!(p.question.is_some(), "and leaves the question");
+    }
+
+    /// Twelve rows (the four fixed, eight of the user's): a capsule with its digit at the right of
+    /// rows 1 to 9 only, each on its own row.
+    #[test]
+    fn rows_past_nine_have_no_capsule() {
+        let mut c = all_four_commands_set();
+        c.power.entry = (0..8).map(|i| user(&format!("Row {i}"), false)).collect();
+        let p = Power::new(&c).unwrap();
+        assert_eq!(p.rows.len(), 12);
+        let b = p.render();
+        assert_eq!(b.shapes.len(), 9, "{:?}", b.shapes);
+        for (i, s) in b.shapes.iter().enumerate() {
+            assert_eq!((s.row, s.width, s.rows, s.kind), (i, 3, 1, ShapeKind::Chip(Tint::Pill)), "row {i}");
+            let digit = b.rows[i].text().chars().nth(usize::from(s.col) + 1);
+            assert_eq!(digit, char::from_digit(i as u32 + 1, 10), "row {i}");
+            assert_eq!(usize::from(s.col + s.width + 1), usize::from(p.width()), "one pad cell after it, row {i}");
+        }
+        for i in 9..12 {
+            assert_eq!(b.rows[i].text().trim_end(), format!(" {USER_GLYPH} Row {}", i - 4), "row {i}: its text alone");
+        }
+    }
+
+    /// The width follows the longest text: a 24-character user name shows whole, its capsule after
+    /// it; the default rows are as wide as Power off's question; a row's countdown line counts.
+    #[test]
+    fn the_width_fits_the_longest_row() {
+        let name = "Twenty-four characters!!";
+        assert_eq!(name.chars().count(), crate::config::POWER_NAME_MAX);
+        let p = Power::new(&with_rows(vec![user(name, false)])).unwrap();
+        // The pad, "• " and the name, a blank, a gap, the capsule, the pad.
+        assert_eq!(p.width(), 1 + 2 + 24 + 1 + 1 + 3 + 1);
+        let b = p.render();
+        assert_eq!(b.cells().0, p.width());
+        assert!(b.rows[3].text().contains(name), "not cut: {}", b.rows[3].text());
+        let d = Power::new(&BarConfig::default()).unwrap();
+        assert_eq!(d.width(), 1 + 14 + 1 + 1 + 3 + 1, "\"⏻ Power off? ⏎\" (14 cells) sets it");
+        // Asking, the width does not change (the popup keeps its size).
+        let mut q = Power::new(&BarConfig::default()).unwrap();
+        digit(&mut q, '3', Instant::now());
+        assert_eq!(q.render().cells(), d.render().cells());
+        // A countdown's line, "⏻ Power off in 30 s · Esc" (25 cells), is longer than the question.
+        let mut c = BarConfig::default();
+        c.power.countdown = 30;
+        assert_eq!(Power::new(&c).unwrap().width(), 1 + 25 + 1 + 1 + 3 + 1);
+    }
+
+    /// The menu as drawn: Lock, Log out, Reboot, Power off and one user row; Reboot selected, Power
+    /// off asking; the digits in their capsules.
+    #[test]
+    fn power_menu_with_digits_snapshot() {
+        let t = Instant::now();
+        let mut c = all_four_commands_set();
+        c.power.entry = vec![user("Quit", false)];
+        let mut p = Power::new(&c).unwrap();
+        digit(&mut p, '4', t);
+        p.selected = Some(2);
+        let b = p.render();
+        let mut out: Vec<String> = b.rows.iter().map(|g| format!("{}\n{}", g.text(), g.styles())).collect();
+        out.extend(b.shapes.iter().map(|s| format!("{s:?}")));
+        insta::assert_snapshot!("power_menu_with_digits", out.join("\n"));
     }
 }

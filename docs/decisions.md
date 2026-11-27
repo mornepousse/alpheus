@@ -391,6 +391,21 @@ Date: 2026-10-13 · Source: tests `a_held_enter_acts_once` and `the_pointer_sele
 
 Status: awaiting confirmation at the trial
 
+### A digit picks a power row, and the same digit confirms
+
+The keys 1 to 9 select their row and activate it, under the same rule as Enter: a row that does
+not ask runs at once; a row that asks (Reboot, Power off, a `confirm` row) asks, and the same
+digit 0.4 s to 3 s later confirms. So `4` `4` powers off, never a lone `4`, and a quick double
+press never confirms. Another digit moves to its row and asks that row's own question, and a held
+digit never acts (the repeat rule above). A digit past the rows is any other key. Each of rows 1
+to 9 shows its digit in a capsule at its right, outside the selection band, and the menu's width
+follows its longest text (label, question or countdown line) instead of a fixed 16 cells, so a
+24-character name shows whole and the popup keeps one size. The digit is the typed character, as
+every key of the menu is read: on AZERTY it needs Shift or the keypad. Decision Q5 (a) of the
+session menu design.
+
+Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`
+
 ### The power menu has its own timer
 
 The question's 3 s expiry uses a `DeadlineTimer` of the menu's own, armed only while a question is

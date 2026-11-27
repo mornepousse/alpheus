@@ -3836,7 +3836,27 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
 /// times the built-ins shown or hidden.
 #[test]
 fn every_power_menu_activation_is_a_configured_session() {
-    let keys = [Key::Up, Key::Down, Key::Tab, Key::BackTab, Key::Enter, Key::Char(' '), Key::Escape, Key::Home, Key::Left, Key::Char('x')];
+    let keys = [
+        Key::Up,
+        Key::Down,
+        Key::Tab,
+        Key::BackTab,
+        Key::Enter,
+        Key::Char(' '),
+        Key::Escape,
+        Key::Home,
+        Key::Left,
+        Key::Char('x'),
+        Key::Char('1'),
+        Key::Char('2'),
+        Key::Char('3'),
+        Key::Char('4'),
+        Key::Char('5'),
+        Key::Char('6'),
+        Key::Char('7'),
+        Key::Char('8'),
+        Key::Char('9'),
+    ];
     let t = Instant::now();
     let later = t + session::CONFIRM_AFTER;
     for builtins in [true, false] {

@@ -10,16 +10,20 @@ The `power` module draws `⏻` alone, in its own block, in the bar's normal text
 the clock. A left click on it opens a popup under it with one row per session command that is set:
 
 ```
-┌──────────────┐
-│  Lock        │
-│ 󰍃 Log out     │
-│ 󰜉 Reboot      │
-│ ⏻ Power off   │
-└──────────────┘
+┌─────────────────────┐
+│  Lock           1  │
+│ 󰍃 Log out        2  │
+│ 󰜉 Reboot         3  │
+│ ⏻ Power off      4  │
+└─────────────────────┘
 ```
 
 - The rows come in the order Lock, Log out, Reboot, Power off. Each shows its glyph in the accent
-  colour, then its word. The selected row is on a band.
+  colour, then its word, and at its right its digit, dim, in a capsule (rows 1 to 9; the menu has
+  at most 12). The selected row is on a band, which stops before the capsule.
+- The menu is as wide as its longest text needs: a row's label, its question when it asks, its
+  countdown's line when it has one, so it keeps one size whatever it shows, and a 24-character
+  name shows whole.
 - **Lock** and **Log out** run at once, then the menu closes.
 - **Reboot** and **Power off** ask first: the row becomes `󰜉 Reboot? ⏎` or `⏻ Power off? ⏎` in the
   warning colour. A second activation runs the command, and the menu closes.
@@ -39,13 +43,18 @@ that names one is refused (see Configuration).
   opens. Ctrl+N and Ctrl+P move too. The selection stops at the ends; it does not wrap round.
 - **Enter or Space** runs the selected row (Enter with nothing selected does nothing). A **left
   press** on a row selects it and runs it. **Hovering** a row selects it.
+- **A digit**, 1 to 9, selects its row and activates it: a row that does not ask runs at once; a
+  row that asks asks, and the same digit pressed again 0.4 s to 3 s later confirms it (so does
+  Enter). Another digit asks its own row's question; a digit past the rows does nothing but drop
+  a pending question. The digit is the character the key types: on a layout whose top row types
+  other characters without Shift (AZERTY), press Shift or use the keypad.
 - **Esc**, or a click outside the menu, closes it. So does a change of style that moves the bar,
   or the output going away.
 - **The question.** A second activation counts only from 0.4 s after the question appeared, and
   only until 3 s after it, so a double click or a double Enter never confirms. Moving the
   selection, pressing another row, any other key, or 3 s passing cancels the question and draws
   the row plain again.
-- **A held key** repeats only to move: a held Enter acts once. The wheel, and the right and middle
+- **A held key** repeats only to move: a held Enter or digit acts once. The wheel, and the right and middle
   buttons, do nothing in the menu.
 - **From a key.** `alpheus-launch --power` opens the menu under the bar's right end on the focused
   output (it works without the `power` module, and prints an error and exits 2 when the menu has no
@@ -101,9 +110,6 @@ found (`an argument of run contains "suspend"`). The screens' word is read by it
 an argument merely containing those three letters, a path for instance, is refused too, and the
 message says `"dpm"`.
 
-The menu is 16 cells wide today, as before the rows of your own: a long name (or its question) is
-cut at the menu's edge.
-
 A `modules` list of your own needs `"power"` added, after `"clock"`, to show the button. On a
 narrow bar the button is the last module to be removed. Without the `window` module in `modules`,
 the free space goes before the last module, so a bar configured `[..., "clock", "power"]` shows the
@@ -118,8 +124,10 @@ Two files in `crates/alpheus-daemon/src/power/`, and the rule they share in `ses
   `i`th `[[power.entry]]`; its `command` and its log `word`), `PowerRow` (its entry, glyph, label,
   whether it asks, its countdown), `rows` and `any_rows` (built from `BarConfig` at open), `Power`
   (the rows, the selection, the pending question), `PowerAction` (what a key or the pointer asks of
-  the wiring: nothing, redraw, close, or run a row and close), `key`, `hover`, `press`, `due`,
-  `deadline` and `render`. The tests sit at the bottom of the file.
+  the wiring: nothing, redraw, close, or run a row and close), `key` (digits included), `hover`,
+  `press`, `due`, `deadline`, `width` (the longest text plus the pads, the gap and the capsule) and
+  `render` (the digit capsules are `ShapeKind::Chip(Tint::Pill)` shapes of the `Boxed`, painted
+  under the cells by `paint_boxed`). The tests sit at the bottom of the file.
 - `app.rs`: the wiring. `OPS` is the menu's row in the table of popups (`popup::POPUPS`).
   `power_toggle` opens the popup from a click or the verb; `power_key` and `power_pointer` hand
   input to the model; `power_action` carries out what the model answers: redraw, close, or run a
@@ -158,7 +166,7 @@ start), never as its command or its name, which can name the user.
   is driven through it only ever asks to run a row whose command is set (a fixed row only while
   shown, and with its `[quick]` command), every row is reached, no command holds a sleep word, and
   Reboot, Power off and a `confirm` row never run without their own question and a second
-  activation at least 0.4 s later.
+  activation at least 0.4 s later. The keys driven include the digits 1 to 9.
 - `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and
   `a_power_entry_naming_sleep_makes_bar_toml_invalid`: a row of your own that names a sleep word is
   refused at load. The source matches the stem `dpm`, since `output_power_management_never_appears`
@@ -166,13 +174,15 @@ start), never as its command or its name, which can name the user.
 - The headless tests (`power_a_click_opens_the_menu_and_down_enter_locks`,
   `power_a_click_on_a_row_runs_it`, `power_off_asks_then_a_second_enter_after_half_a_second_runs_it`,
   `power_two_enters_a_tenth_of_a_second_apart_run_nothing`,
-  `power_escape_closes_it_with_its_question_and_nothing_stays_awake` and
-  `power_verb_opens_and_closes_the_menu`) pin the click, the keys, the question and the verb against
+  `power_escape_closes_it_with_its_question_and_nothing_stays_awake`,
+  `power_verb_opens_and_closes_the_menu` and `power_a_digit_runs_a_user_row`) pin the click, the
+  keys, a digit, the question and the verb against
   a fake executor that records each command; no test runs a real `loginctl` or `systemctl`.
 - The reasons are in [decisions.md](../decisions.md): "The power menu runs the `[quick]` commands,
   and `[power]` adds rows", "A user row of the power menu never sleeps", "Reboot and power off ask
   first, and a second activation confirms from 0.4 s to 3 s", "Nothing is selected when the power
-  menu opens", "A held key repeats only to move, in the power menu", "The power menu has its own
+  menu opens", "A held key repeats only to move, in the power menu", "A digit picks a power row,
+  and the same digit confirms", "The power menu has its own
   timer", "`alpheus-launch --power` opens the menu without a grab".
 
 ## What it costs
