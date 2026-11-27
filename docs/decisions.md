@@ -390,12 +390,17 @@ Date: 2026-11-21 · Source: tests `the_verb_is_refused_only_without_any_session_
 
 ### The resources history is kept always, as whole samples
 
-While the `resources` module is on, the bar keeps a ring of the last 60 samples (about 3 KB, written
+While the `resources` module is on, the bar keeps a ring of the last 60 samples (about 3.3 KB, written
 in place on the existing tick, with no allocation after start), whether or not the popup is open.
 The popup therefore opens on a graph that is already full. A ring filled only while the popup is
-open would save those 3 KB but open on an empty graph that takes a minute or two to say anything.
+open would save those 3.3 KB but open on an empty graph that takes a minute or two to say anything.
 Every pass is stored, including one with no reading, so a missing reading is a gap in the graph and
 the time axis never shifts.
+
+The bound pinned by `the_history_stays_small` was 3 KiB; the owner approved 4 KiB on 2026-11-27 so the
+sample can carry the GPU, its video memory and four disks (+8 bytes per sample, 48 to 56: a 56-byte
+sample makes the ring 3,376 bytes, above 3,072). The anonymous-memory bound of the memory test is
+unchanged.
 
 Date: 2026-11-15 · Source: tests `the_ring_keeps_the_last_sixty_and_push_reports_last_only` and `the_history_stays_small` (`system.rs`); memory `resources_popup_pss_idle_open_and_closed`
 

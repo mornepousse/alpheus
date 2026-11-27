@@ -85,7 +85,7 @@ Two files in `crates/alpheus-daemon/src/resources/`, and the figures they read i
   `startup.rs`) calls with each reading: it applies the reading to the bar, then repaints the
   popup when it is the open one.
 - `system::Resources` holds the latest `Sample` and a `History`, a ring of the last 60 samples
-  (about 3 KB, inline, written in place with no allocation). This folder does not read the system:
+  (about 3.3 KB, inline, written in place with no allocation). This folder does not read the system:
   `sources/resources.rs` does that, and the bar's own text comes from the same samples.
 - The graphs are drawn by the painter (`painter::plot`): each sample is a column whose edges are
   whole pixels, so the columns tile the graph exactly at every scale, with no anti-aliasing.
@@ -108,7 +108,7 @@ reading. The popup owns no timer: opening it adds no wake-up.
 - `a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading`: a tick applies the
   reading before it repaints, repaints only while the popup is open, and the timer goes through
   `resources_tick`, never around it.
-- `the_history_stays_small` (in `system.rs`) pins the ring at 3 KiB; `resources_history_full_keeps_nothing_more`
+- `the_history_stays_small` (in `system.rs`) pins the ring at 4 KiB; `resources_history_full_keeps_nothing_more`
   bounds the growth of the daemon's anonymous memory at 64 KB between 30 s and 70 s, with the ring
   full and wrapped.
 - The headless tests (`resources_a_click_opens_the_popup_with_graphs`,
@@ -128,7 +128,7 @@ Measured in release, back to back, 3 runs (the [memory tables](../measurements.m
 method):
 
 - **Linked in:** within noise of the build before it (binary +24 KiB stripped).
-- **The history:** about 3 KB, below what PSS can show; `Pss_Anon` does not move between 30 s and
+- **The history:** about 3.3 KB, below what PSS can show; `Pss_Anon` does not move between 30 s and
   70 s with the ring full.
 - **Popup open:** +532 to +544 KB over rest; once closed, +40 to +44 KB of anonymous memory over rest;
   twenty more cycles +44 to +60 KB (`resources_popup_pss_idle_open_and_closed`).

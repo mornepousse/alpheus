@@ -9,7 +9,7 @@
 //!
 //! Never:
 //! - read anything: no file, no socket, no clock — the sources do that and hand the result in;
-//! - grow with time: the history is a fixed ring of about 3 KB (`the_history_stays_small`), and
+//! - grow with time: the history is a fixed ring of about 3.3 KB (`the_history_stays_small`), and
 //!   nothing else here keeps a list that a session can lengthen;
 //! - read a source that is down as a state (docs/decisions.md, "A source that is down is not a
 //!   state").
@@ -533,6 +533,6 @@ mod tests {
 
     #[test]
     fn the_history_stays_small() {
-        assert!(size_of::<History>() <= 3 * 1024, "{}", size_of::<History>());
+        assert!(size_of::<History>() <= 4 * 1024, "{}", size_of::<History>());
     }
 }
