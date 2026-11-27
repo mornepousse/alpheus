@@ -404,7 +404,7 @@ pub struct ResourcesConfig {
     /// The figures shown, in this order (never empty, no repeat).
     pub show: Vec<ResourceItem>,
     /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia), and the driver of the card read for
-    /// usage (amdgpu, i915, xe); empty = automatic.
+    /// usage (amdgpu, i915, xe); empty = automatic (for usage, the `boot_vga` card only).
     pub gpu_sensor: String,
     /// What `gpu` shows: usage, temperature, or both (`auto`: usage when a card offers it).
     pub gpu_metric: GpuMetric,

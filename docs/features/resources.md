@@ -36,9 +36,13 @@ ring, never below 128 KiB/s so that an idle link does not fill it with noise.
 
 On the bar, `gpu` shows `󰢮 23%` (usage), `󰢮 54°` (temperature), or `󰢮 23% 54°` with
 `gpu_metric = "both"` (the degrees in the error colour from 85 °C). Usage comes from the card's
-sysfs files (amdgpu's `gpu_busy_percent` and VRAM figures), the card picked by its driver link;
-a runtime-suspended card is not read at all, so the bar never wakes a hybrid laptop's discrete
-GPU. NVIDIA's proprietary driver offers no usage file and no hwmon: its GPU shows `—` in the popup
+sysfs files (amdgpu's `gpu_busy_percent` and VRAM figures), the card picked by its driver link
+among the cards driving the panel (`boot_vga`; another only when `gpu_sensor` names it). Reading a
+usage file marks the card busy and restarts its autosuspend timer, so: a card that is not awake is
+not read at all, and an awake one at most once per its autosuspend delay and a second (about every
+11 s on Intel, 6 s on amdgpu), the last figures repeating in between, so the card can still fall
+asleep; its hwmon in `both` follows the same rule (docs/decisions.md, "A GPU's usage is read without
+keeping it awake"). NVIDIA's proprietary driver offers no usage file and no hwmon: its GPU shows `—` in the popup
 and nothing on the bar (no `nvidia-smi`, no NVML: alpheus runs no command for its figures).
 
 On the bar, `disk` shows the fullest of the listed paths (`󰋊 87%`). The disks are read every
@@ -128,7 +132,10 @@ reading. The popup owns no timer: opening it adds no wake-up.
   process or command.
 - `the_resources_reader_never_logs_a_mount_an_interface_or_a_card`: no log line of the reader names
   a disk path, a mount, an interface or a GPU card.
-- `a_suspended_gpu_is_not_read`: a runtime-suspended card gives no figure, its busy file unread;
+- `a_suspended_gpu_is_not_read` and `only_an_active_card_is_read`: a card that is not awake gives no
+  figure, its busy file unread; `usage_is_read_once_per_autosuspend_delay_and_a_second`,
+  `both_skips_the_sensor_of_a_sleeping_card` and `temp_spaces_the_hwmon_of_a_named_secondary_card`:
+  the reads never keep the card from falling asleep; `auto_picks_only_the_boot_vga_card`;
   `a_monitor_only_card_never_wins` and `gpu_nvidia_proprietary_gives_nothing_and_no_panic`: an
   `evdi` or NVIDIA card is never picked for usage.
 - `the_resources_popup_has_no_panicking_path`: neither file's production code panics.
@@ -148,7 +155,7 @@ reading. The popup owns no timer: opening it adds no wake-up.
   block in the popup", "Each resources graph has a set scale; the network's follows its peak, with a
   floor", "The bar shows the fullest disk, the popup one block per path", "Disks are read every
   `disk_interval` seconds, the last figures repeat between reads", "GPU usage comes from sysfs only;
-  NVIDIA proprietary shows —", "The resources popup has no timer of its own", "The left click opens the resources popup and the
+  NVIDIA proprietary shows —", "A GPU's usage is read without keeping it awake", "The resources popup has no timer of its own", "The left click opens the resources popup and the
   right click runs `[actions] resources`", "Logs carry fixed words and numbers only".
 
 ## What it costs
