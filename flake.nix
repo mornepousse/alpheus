@@ -41,7 +41,7 @@
           postInstall = pkgs.lib.optionalString thirdParty ''
             install -Dm644 NOTICE $out/share/doc/alpheus/NOTICE
           '';
-          version = "0.1.0";
+          version = "0.2.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           # Workspace: one package per binary. Session tools are called by NAME
