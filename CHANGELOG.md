@@ -6,7 +6,7 @@ not released yet goes under a new *Unreleased* heading above the latest version.
 code it touches). Costs are measured in release builds, back to back with the build before; the method and the
 tables are in [docs/measurements.md](docs/measurements.md). The number in parentheses after a title is the day of the month the delivery merged.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-28
 
 ### 2026-11
 

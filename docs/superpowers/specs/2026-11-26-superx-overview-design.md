@@ -15,7 +15,7 @@ the confirmation looks like a selection.
 Mockups rendered by alpheus's own painter were shown; the owner chose **P2a, the overview**: every
 category in its own rounded card, every tool visible with a key capsule, toggles drawn as
 switches, a rounded search field on top, a footer of key capsules. Reference renders (throwaway,
-not in the repo): the P2a, P2b and P2c PNGs of the 2026-11-26 session.
+not in the repo): the P2a, P2b and P2c PNG images of the 2026-11-26 session.
 
 ## Goals
 

@@ -18,11 +18,11 @@ Each release at <https://github.com/mornepousse/alpheus/releases> carries an
 x86_64 Linux tarball (built by CI on Ubuntu 24.04) and a `SHA256SUMS` file:
 
 ```sh
-v=0.1.0
+v=0.2.0
 base=https://github.com/mornepousse/alpheus/releases/download/v$v
 curl -fLO "$base/alpheus-$v-x86_64-linux.tar.gz"
 curl -fLO "$base/SHA256SUMS"
-sha256sum -c SHA256SUMS                      # must print: alpheus-0.1.0-x86_64-linux.tar.gz: OK
+sha256sum -c SHA256SUMS                      # must print: alpheus-0.2.0-x86_64-linux.tar.gz: OK
 tar -xzf "alpheus-$v-x86_64-linux.tar.gz"
 install -Dm755 -t ~/.local/bin "alpheus-$v-x86_64-linux"/alpheus "alpheus-$v-x86_64-linux"/alpheus-demon "alpheus-$v-x86_64-linux"/alpheus-launch
 ```
