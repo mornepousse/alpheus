@@ -25,6 +25,8 @@ appar = "appar"
 projets = "projets"
 commandes = "commandes"
 complet = "complet"
+# A deliberately partial query ("/alph") in the launcher's chip tests.
+alph = "alph"
 # Informal plural used in the notification tests ("two criticals").
 criticals = "criticals"
 # Test function names spelling "the entry's" without the apostrophe.
