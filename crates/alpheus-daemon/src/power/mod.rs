@@ -872,8 +872,8 @@ mod tests {
             assert_eq!(digit, char::from_digit(i as u32 + 1, 10), "row {i}");
             assert_eq!(usize::from(s.col + s.width + 1), usize::from(p.width()), "one pad cell after it, row {i}");
         }
-        for i in 9..12 {
-            assert_eq!(b.rows[i].text().trim_end(), format!(" {USER_GLYPH} Row {}", i - 4), "row {i}: its text alone");
+        for (i, row) in b.rows.iter().enumerate().take(12).skip(9) {
+            assert_eq!(row.text().trim_end(), format!(" {USER_GLYPH} Row {}", i - 4), "row {i}: its text alone");
         }
         // Selected, a row past nine has its band end where every other row's does.
         let mut p = p;
